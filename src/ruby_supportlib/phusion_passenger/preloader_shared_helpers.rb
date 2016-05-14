@@ -38,14 +38,17 @@ module PhusionPassenger
       if !Kernel.respond_to?(:fork)
         message = "Smart spawning is not available on this Ruby " +
           "implementation because it does not support `Kernel.fork`. "
-        if ENV['SERVER_SOFTWARE'].to_s =~ /nginx/i
+        case options['integration_mode']
+        when 'nginx'
           message << "Please set `passenger_spawn_method` to `direct`."
-        else
+        when 'apache'
           message << "Please set `PassengerSpawnMethod` to `direct`."
+        else
+          message << "Please set `spawn_method` to `direct`."
         end
         raise(message)
       end
-      return options
+      options
     end
 
     def accept_and_process_next_client(server_socket)

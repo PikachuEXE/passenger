@@ -2,7 +2,7 @@ Unreleased
 -------------------------------
 
  * Updated Boost to version 1.64.0, which fixed a compilation issue on certain Gentoo based setups. Closes GH-1942.
-
+ * Allow prespawn to start app when address bound to non-localhost ip.
 
 Release 5.1.4
 -------------------------------

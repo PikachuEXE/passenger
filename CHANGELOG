@@ -2,6 +2,7 @@ Unreleased
 -------------------------------
 
  * Updated Boost to version 1.64.0, which fixed a compilation issue on certain Gentoo based setups. Closes GH-1942.
+ * Fixes an issue with quoted paths in Python wsgi apps. Closes GH-1828.
 
 
 Release 5.1.4

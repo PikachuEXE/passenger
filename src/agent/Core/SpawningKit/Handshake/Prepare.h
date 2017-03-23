@@ -48,7 +48,6 @@
 
 #include <jsoncpp/json.h>
 
-#include <DataStructures/StringKeyTable.h>
 #include <Constants.h>
 #include <Logging.h>
 #include <StaticString.h>
@@ -133,9 +132,28 @@ private:
 	void createWorkDir() {
 		TRACE_POINT();
 		session.workDir.reset(new HandshakeWorkDir(session.uid, session.gid));
+
+		session.envDumpDir = session.workDir->getPath() + "/envdump";
+		makeDirTree(session.envDumpDir,
+			"u=rwx,g=,o=",
+			session.uid,
+			session.gid);
+		makeDirTree(session.envDumpDir + "/annotations",
+			"u=rwx,g=,o=",
+			session.uid,
+			session.gid);
+
 		session.responseDir = session.workDir->getPath() + "/response";
-		createFifo(session.workDir->getPath() + "/finish");
 		makeDirTree(session.responseDir,
+			"u=rwx,g=,o=",
+			session.uid,
+			session.gid);
+		createFifo(session.responseDir + "/finish");
+		makeDirTree(session.responseDir + "/error",
+			"u=rwx,g=,o=",
+			session.uid,
+			session.gid);
+		makeDirTree(session.responseDir + "/steps",
 			"u=rwx,g=,o=",
 			session.uid,
 			session.gid);
@@ -210,7 +228,7 @@ private:
 			session.uid, session.gid);
 
 		const string dir = session.workDir->getPath() + "/args";
-		makeDirTree(dir, "u=rwx,g=r,o=r",
+		makeDirTree(dir, "u=rwx,g=,o=",
 			session.uid,
 			session.gid);
 
@@ -366,10 +384,9 @@ private:
 	void throwSpawnExceptionBecauseOfPortFindingTimeout() {
 		assert(config->genericApp || config->findFreePort);
 		SpawnException e(
-			"A timeout occurred while preparing to spawn an application process.",
-			config,
+			TIMEOUT_ERROR,
 			session.journey,
-			SpawnException::TIMEOUT_ERROR);
+			config);
 		e.setProblemDescriptionHTML(
 			"<p>The " PROGRAM_NAME " application server tried"
 			" to look for a free TCP port for the web application"
@@ -412,7 +429,7 @@ private:
 			"</div>"
 		);
 
-		throw e;
+		throw e.finalize();
 	}
 
 	void throwSpawnExceptionBecauseOfFailureToFindFreePort() {
@@ -425,10 +442,10 @@ private:
 		}
 
 		SpawnException e(
-			"Could not find a free port to spawn the application on",
-			config,
+			INTERNAL_ERROR,
 			session.journey,
-			SpawnException::INTERNAL_ERROR);
+			config);
+		e.setSummary("Could not find a free port to spawn the application on.");
 		e.setProblemDescriptionHTML(
 			"<p>The " PROGRAM_NAME " application server tried"
 			" to look for a free TCP port for the web application"
@@ -446,7 +463,7 @@ private:
 			+ "-" + toString(maxPortRange) + ".</p>"
 
 			"</div>");
-		throw e;
+		throw e.finalize();
 	}
 
 public:
@@ -495,7 +512,7 @@ public:
 			throw;
 		} catch (const std::exception &e) {
 			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION);
-			throw SpawnException(e, config, session.journey);
+			throw SpawnException(e, session.journey, config).finalize();
 		}
 	}
 };

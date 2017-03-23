@@ -27,9 +27,14 @@
 #define _PASSENGER_SPAWNING_KIT_SPAWNER_H_
 
 #include <boost/shared_ptr.hpp>
+
+#include <modp_b64.h>
+
+#include <Logging.h>
 #include <Utils/SystemTime.h>
 #include <Core/SpawningKit/Context.h>
 #include <Core/SpawningKit/Result.h>
+#include <Core/SpawningKit/UserSwitchingRules.h>
 
 namespace Passenger {
 namespace SpawningKit {
@@ -40,33 +45,71 @@ using namespace oxt;
 
 
 class Spawner {
+private:
+	StringKeyTable<StaticString> decodeEnvironmentVariables(const StaticString &envvarsData) {
+		StringKeyTable<StaticString> result;
+		string::size_type keyStart = 0;
+
+		while (keyStart < envvarsData.size()) {
+			string::size_type keyEnd = envvarsData.find('\0', keyStart);
+			string::size_type valueStart = keyEnd + 1;
+			if (valueStart >= envvarsData.size()) {
+				break;
+			}
+
+			string::size_type valueEnd = envvarsData.find('\0', valueStart);
+			if (valueEnd >= envvarsData.size()) {
+				break;
+			}
+
+			StaticString key = envvarsData.substr(keyStart, keyEnd - keyStart);
+			StaticString value = envvarsData.substr(valueStart, valueEnd - valueStart);
+			result.insert(key, value, true);
+			keyStart = valueEnd + 1;
+		}
+
+		result.compact();
+		return result;
+	}
+
 protected:
 	Context *context;
 
 	void setConfigFromAppPoolOptions(Config *config, Json::Value &extraArgs,
 		const AppPoolOptions &options)
 	{
+		string startCommand = options.getStartCommand(*context->resourceLocator);
+		string envvarsData;
+		try {
+			envvarsData = modp::b64_decode(options.environmentVariables.data(),
+				options.environmentVariables.size());
+		} catch (const std::runtime_error &) {
+			P_WARN("Unable to decode base64-encoded environment variables: " <<
+				options.environmentVariables);
+			envvarsData.clear();
+		}
+
 		config->appRoot = options.appRoot;
 		config->logLevel = options.logLevel;
-		config->genericApp;
-		config->startsUsingWrapper;
-		config->findFreePort;
+		config->genericApp = false;
+		config->startsUsingWrapper = true;
+		config->wrapperSuppliedByThirdParty = false;
+		config->findFreePort = false;
 		config->loadShellEnvvars = options.loadShellEnvvars;
 		config->analyticsSupport = options.analytics;
-		config->startCommand;
-		config->startupFile;
+		config->startCommand = startCommand;
+		config->startupFile = options.getStartupFile();
 		config->appType = options.appType;
 		config->appEnv = options.environment;
 		config->baseURI = options.baseURI;
 		config->environmentVariables = decodeEnvironmentVariables(
-			options.environmentVariables);
+			envvarsData);
 		config->unionStationKey = options.unionStationKey;
-		config->stickySessionId = options.stickySessionId;
 		config->apiKey = options.apiKey;
 		config->groupUuid = options.groupUuid;
 		config->lveMinUid = options.lveMinUid;
 		config->fileDescriptorUlimit = options.fileDescriptorUlimit;
-		config->startTimeoutMsec = options.startTimeoutMsec;
+		config->startTimeoutMsec = options.startTimeout;
 
 		UserSwitchingInfo info = prepareUserSwitching(options);
 		config->user = info.username;
@@ -81,6 +124,9 @@ protected:
 		extraArgs["ust_router_password"] = options.ustRouterPassword.toString();
 
 		/******************/
+		/******************/
+
+		config->internStrings();
 	}
 
 public:
@@ -89,7 +135,7 @@ public:
 	 */
 	const unsigned long long creationTime;
 
-	Spawner(const Context *_context)
+	Spawner(Context *_context)
 		: context(_context),
 		  creationTime(SystemTime::getUsec())
 		{ }

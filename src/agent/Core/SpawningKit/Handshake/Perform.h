@@ -39,12 +39,15 @@
 #include <cerrno>
 
 #include <sys/types.h>
+#include <dirent.h>
 
 #include <Constants.h>
 #include <Exceptions.h>
 #include <FileDescriptor.h>
+#include <Utils.h>
 #include <Utils/ScopeGuard.h>
 #include <Utils/SystemTime.h>
+#include <Utils/StrIntUtils.h>
 #include <Core/SpawningKit/Config.h>
 #include <Core/SpawningKit/Exceptions.h>
 #include <Core/SpawningKit/Handshake/BackgroundIOCapturer.h>
@@ -93,7 +96,7 @@ private:
 	bool processExited;
 	FinishState finishState;
 	string finishSignalWatcherErrorMessage;
-	SpawnException::ErrorKind finishSignalWatcherErrorKind;
+	ErrorCategory finishSignalWatcherErrorCategory;
 
 	oxt::thread *socketPingabilityWatcher;
 	bool socketIsNowPingable;
@@ -164,15 +167,9 @@ private:
 			boost::lock_guard<boost::mutex> l(syncher);
 			finishState = FINISH_INTERNAL_ERROR;
 			finishSignalWatcherErrorMessage = e.what();
-			if (dynamic_cast<const SystemException *>(&e) != NULL
-			 || dynamic_cast<const IOException *>(&e) != NULL)
-			{
-				finishSignalWatcherErrorKind =
-					SpawnException::OPERATING_SYSTEM_ERROR;
-			} else {
-				finishSignalWatcherErrorKind =
-					SpawnException::INTERNAL_ERROR;
-			}
+			finishSignalWatcherErrorCategory =
+				inferErrorCategoryFromAnotherException(e,
+					SPAWNING_KIT_HANDSHAKE_PERFORM);
 			wakeupEventLoop();
 		}
 	}
@@ -225,30 +222,26 @@ private:
 		 || processExited)
 		{
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.loadInfoFromResponseDir(session.responseDir);
-			throw SpawnException(
-				"An error occurred while spawning an application process.",
-				config,
+			loadJourneyStateFromResponseDir();
+			SpawnException e(
+				inferErrorCategoryFromResponseDir(INTERNAL_ERROR),
 				session.journey,
-				SpawnException::DETERMINE_ERROR_KIND_FROM_RESPONSE_DIR,
-				string(),
-				getStdouterrData(),
-				session.responseDir,
-				true);
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadSubprocessErrorMessagesAndAnnotations(e);
+			throw e.finalize();
 		}
 
 		if (session.timeoutUsec == 0) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.loadInfoFromResponseDir(session.responseDir);
-			throw SpawnException(
-				"A timeout occurred while spawning an application process.",
-				config,
+			loadJourneyStateFromResponseDir();
+			SpawnException e(
+				TIMEOUT_ERROR,
 				session.journey,
-				SpawnException::TIMEOUT_ERROR,
-				string(),
-				getStdouterrData(),
-				session.responseDir,
-				true);
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadSubprocessErrorMessagesAndAnnotations(e);
+			throw e.finalize();
 		}
 
 		return (config->genericApp && socketIsNowPingable)
@@ -318,38 +311,38 @@ private:
 	void handleErrorResponse() {
 		TRACE_POINT();
 		sleepShortlyToCaptureMoreStdoutStderr();
-		session.journey.loadInfoFromResponseDir(session.responseDir);
-		throw SpawnException(
-			"The web application aborted with an error during startup.",
-			config,
+		loadJourneyStateFromResponseDir();
+		SpawnException e(
+			inferErrorCategoryFromResponseDir(INTERNAL_ERROR),
 			session.journey,
-			SpawnException::DETERMINE_ERROR_KIND_FROM_RESPONSE_DIR,
-			string(),
-			getStdouterrData(),
-			session.responseDir,
-			true);
+			config);
+		e.setSummary("The web application aborted with an error during startup.");
+		e.setStdoutAndErrData(getStdoutErrData());
+		loadSubprocessErrorMessagesAndAnnotations(e);
+		throw e.finalize();
 	}
 
 	void handleInternalError() {
 		TRACE_POINT();
 		sleepShortlyToCaptureMoreStdoutStderr();
-		session.journey.failedStep = PASSENGER_CORE_DURING_HANDSHAKE;
-		throw SpawnException(
-			"An internal error occurred while spawning an application process: "
-				+ finishSignalWatcherErrorMessage,
-			config,
-			journey,
-			finishSignalWatcherErrorKind,
-			finishSignalWatcherErrorMessage,
-			getStdouterrData(),
-			session.responseDir);
+		session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+		loadJourneyStateFromResponseDir();
+		SpawnException e(
+			finishSignalWatcherErrorCategory,
+			session.journey,
+			config);
+		e.setSummary("An internal error occurred while spawning an application process: "
+			+ finishSignalWatcherErrorMessage);
+		e.setAdvancedProblemDetails(finishSignalWatcherErrorMessage);
+		e.setStdoutAndErrData(getStdoutErrData());
+		throw e.finalize();
 	}
 
 	void wakeupEventLoop() {
 		cond.notify_all();
 	}
 
-	string getStdouterrData() const {
+	string getStdoutErrData() const {
 		if (stdoutAndErrCapturer != NULL) {
 			return stdoutAndErrCapturer->getData();
 		} else {
@@ -363,42 +356,84 @@ private:
 
 	void throwSpawnExceptionBecauseAppDidNotProvideSockets() {
 		assert(!config->genericApp);
+
 		sleepShortlyToCaptureMoreStdoutStderr();
-		if (config->startsUsingWrapper) {
-			session.journey.failedStep = SUBPROCESS_WRAPPER_PREPARATION;
+
+		if (!config->genericApp && config->startsUsingWrapper) {
+			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION);
+			loadJourneyStateFromResponseDir();
+
 			SpawnException e(
-				"Error spawning the web application: the application wrapper"
-				" did not report any sockets to receive requests on.",
-				config,
+				INTERNAL_ERROR,
 				session.journey,
-				SpawnException::INTERNAL_ERROR,
-				string(),
-				session.responseDir);
-			e.setProblemDescriptionHTML(
-				"<p>The " PROGRAM_NAME " application server tried"
-				" to start the web application through a " SHORT_PROGRAM_NAME
-				"-internal helper tool (in technical terms: the wrapper), "
-				" but " SHORT_PROGRAM_NAME " encountered a bug"
-				" in this helper tool. " SHORT_PROGRAM_NAME " expected"
-				" the helper tool to report a socket to receive requests"
-				" on, but the helper tool finished its startup sequence"
-				" without reporting a socket.</p>");
-			e.setSolutionDescriptionHTML(
-				"<p class=\"sole-solution\">"
-				"This is a bug in " SHORT_PROGRAM_NAME "."
-				" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
-				" to the " SHORT_PROGRAM_NAME " authors.</p>");
-			throw e;
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadAnnotationsFromEnvDumpDir(e);
+
+			if (config->wrapperSuppliedByThirdParty) {
+				e.setSummary("Error spawning the web application:"
+					" a third-party application wrapper did not"
+					" report any sockets to receive requests on.");
+			} else {
+				e.setSummary("Error spawning the web application:"
+					" a " SHORT_PROGRAM_NAME "-internal application"
+					" wrapper did not report any sockets to receive"
+					" requests on.");
+			}
+
+			if (config->wrapperSuppliedByThirdParty) {
+				e.setProblemDescriptionHTML(
+					"<p>The " PROGRAM_NAME " application server tried"
+					" to start the web application through a helper tool "
+					" called the \"wrapper\". This helper tool is not part of "
+					SHORT_PROGRAM_NAME ". " SHORT_PROGRAM_NAME " expected"
+					" the helper tool to report a socket to receive requests"
+					" on, but the helper tool finished its startup sequence"
+					" without reporting a socket.</p>");
+			} else {
+				e.setProblemDescriptionHTML(
+					"<p>The " PROGRAM_NAME " application server tried"
+					" to start the web application through a " SHORT_PROGRAM_NAME
+					"-internal helper tool called the \"wrapper\", "
+					" but " SHORT_PROGRAM_NAME " encountered a bug"
+					" in this helper tool. " SHORT_PROGRAM_NAME " expected"
+					" the helper tool to report a socket to receive requests"
+					" on, but the helper tool finished its startup sequence"
+					" without reporting a socket.</p>");
+			}
+
+			if (config->wrapperSuppliedByThirdParty) {
+				e.setSolutionDescriptionHTML(
+					"<p class=\"sole-solution\">"
+					"This is a bug in the wrapper, so please contact the author of"
+					" the wrapper. This problem is outside " SHORT_PROGRAM_NAME
+					"'s control. Below follows the command that "
+					SHORT_PROGRAM_NAME " tried to execute, so that you can infer"
+					" which wrapper was used:</p>"
+					"<pre>" + escapeHTML(config->startCommand) + "</pre>");
+			} else {
+				e.setSolutionDescriptionHTML(
+					"<p class=\"sole-solution\">"
+					"This is a bug in " SHORT_PROGRAM_NAME "."
+					" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
+					" to the " SHORT_PROGRAM_NAME " authors.</p>");
+			}
+
+			throw e.finalize();
+
 		} else {
-			session.journey.failedStep = SUBPROCESS_APP_LOAD_OR_EXEC;
+			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC);
+			loadJourneyStateFromResponseDir();
+
 			SpawnException e(
-				"Error spawning the web application: the application"
-				" did not report any sockets to receive requests on.",
-				config,
+				INTERNAL_ERROR,
 				session.journey,
-				SpawnException::INTERNAL_ERROR,
-				string(),
-				session.responseDir);
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadAnnotationsFromEnvDumpDir(e);
+
+			e.setSummary("Error spawning the web application: the application"
+				" did not report any sockets to receive requests on.");
 			e.setProblemDescriptionHTML(
 				"<p>The " PROGRAM_NAME " application server tried"
 				" to start the web application, but encountered a bug"
@@ -412,7 +447,8 @@ private:
 				"report this problem to the application's developer. "
 				"This problem is outside " SHORT_PROGRAM_NAME "'s "
 				"control.</p>");
-			throw e;
+
+			throw e.finalize();
 		}
 	}
 
@@ -426,26 +462,27 @@ private:
 		sleepShortlyToCaptureMoreStdoutStderr();
 
 		if (!internalFieldErrors.empty()) {
-			assert(!config->startsUsingWrapper);
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+			loadJourneyStateFromResponseDir();
 
-			end = internalFieldErrors.end();
+			SpawnException e(
+				INTERNAL_ERROR,
+				session.journey,
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			e.setAdvancedProblemDetails(toString(internalFieldErrors));
 
-			session.journey.failedStep = PASSENGER_CORE_DURING_HANDSHAKE;
-			SpawnException e("Error spawning the web application:"
+			e.setSummary("Error spawning the web application:"
 				" a bug in " SHORT_PROGRAM_NAME " caused the"
 				" spawn result to be invalid: "
-				+ toString(internalFieldErrors),
-				config,
-				session.journey,
-				SpawnException::INTERNAL_ERROR,
-				string(),
-				session.responseDir);
+				+ toString(internalFieldErrors));
 
 			message = "<p>The " PROGRAM_NAME " application server tried"
 				" to start the web application, but encountered a bug"
 				" in " SHORT_PROGRAM_NAME " itself. The errors are as"
 				" follows:</p>"
 				"<ul>";
+			end = internalFieldErrors.end();
 			for (it = internalFieldErrors.begin(); it != end; it++) {
 				message.append("<li>" + escapeHTML(*it) + "</li>");
 			}
@@ -458,58 +495,95 @@ private:
 				" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
 				" to the " SHORT_PROGRAM_NAME " authors.</p>");
 
-			throw e;
+			throw e.finalize();
 
-		} else if (config->startsUsingWrapper) {
-			end = appSuppliedFieldErrors.end();
+		} else if (!config->genericApp && config->startsUsingWrapper) {
+			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION);
+			loadJourneyStateFromResponseDir();
 
-			session.journey.failedStep = SUBPROCESS_WRAPPER_PREPARATION;
-			SpawnException e("Error spawning the web application:"
-				" a bug in " SHORT_PROGRAM_NAME " caused the"
-				" spawn result to be invalid: "
-				+ toString(appSuppliedFieldErrors),
-				config,
+			SpawnException e(
+				INTERNAL_ERROR,
 				session.journey,
-				SpawnException::INTERNAL_ERROR,
-				string(),
-				session.responseDir);
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			e.setAdvancedProblemDetails(toString(appSuppliedFieldErrors));
+			loadAnnotationsFromEnvDumpDir(e);
 
-			message = "<p>The " PROGRAM_NAME " application server tried"
-				" to start the web application through a " SHORT_PROGRAM_NAME
-				"-internal helper tool (in technical terms: the wrapper), "
-				" but " SHORT_PROGRAM_NAME " encountered a bug"
-				" in this helper tool. " SHORT_PROGRAM_NAME " expected"
-				" the helper tool to communicate back various information"
-				" about the application's startup sequence, but the tool"
-				" did not communicate back correctly."
-				" The errors are as follows:</p>"
-				"<ul>";
+			if (config->wrapperSuppliedByThirdParty) {
+				e.setSummary("Error spawning the web application:"
+					" a bug in a third-party application wrapper caused"
+					" the spawn result to be invalid: "
+					+ toString(appSuppliedFieldErrors));
+			} else {
+				e.setSummary("Error spawning the web application:"
+					" a bug in a " SHORT_PROGRAM_NAME "-internal"
+					" application wrapper caused the"
+					" spawn result to be invalid: "
+					+ toString(appSuppliedFieldErrors));
+			}
+
+			if (config->wrapperSuppliedByThirdParty) {
+				message = "<p>The " PROGRAM_NAME " application server tried"
+					" to start the web application through a helper tool "
+					" called the \"wrapper\". This helper tool is not part of "
+					SHORT_PROGRAM_NAME ". " SHORT_PROGRAM_NAME " expected"
+					" the helper tool to communicate back various information"
+					" about the application's startup sequence, but the tool"
+					" did not communicate back correctly."
+					" The errors are as follows:</p>"
+					"<ul>";
+			} else {
+				message = "<p>The " PROGRAM_NAME " application server tried"
+					" to start the web application through a " SHORT_PROGRAM_NAME
+					"-internal helper tool (called the \"wrapper\"), "
+					" but " SHORT_PROGRAM_NAME " encountered a bug"
+					" in this helper tool. " SHORT_PROGRAM_NAME " expected"
+					" the helper tool to communicate back various information"
+					" about the application's startup sequence, but the tool"
+					" did not communicate back correctly."
+					" The errors are as follows:</p>"
+					"<ul>";
+			}
+			end = appSuppliedFieldErrors.end();
 			for (it = appSuppliedFieldErrors.begin(); it != end; it++) {
 				message.append("<li>" + escapeHTML(*it) + "</li>");
 			}
 			message.append("</ul>");
 			e.setProblemDescriptionHTML(message);
 
-			e.setSolutionDescriptionHTML(
-				"<p class=\"sole-solution\">"
-				"This is a bug in " SHORT_PROGRAM_NAME "."
-				" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
-				" to the " SHORT_PROGRAM_NAME " authors.</p>");
+			if (config->wrapperSuppliedByThirdParty) {
+				e.setSolutionDescriptionHTML(
+					"<p class=\"sole-solution\">"
+					"This is a bug in the wrapper, so please contact the author of"
+					" the wrapper. This problem is outside " SHORT_PROGRAM_NAME
+					"'s control. Below follows the command that "
+					SHORT_PROGRAM_NAME " tried to execute, so that you can infer"
+					" which wrapper was used:</p>"
+					"<pre>" + escapeHTML(config->startCommand) + "</pre>");
+			} else {
+				e.setSolutionDescriptionHTML(
+					"<p class=\"sole-solution\">"
+					"This is a bug in " SHORT_PROGRAM_NAME "."
+					" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
+					" to the " SHORT_PROGRAM_NAME " authors.</p>");
+			}
 
-			throw e;
+			throw e.finalize();
 
 		} else {
-			end = appSuppliedFieldErrors.end();
+			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC);
+			loadJourneyStateFromResponseDir();
 
-			session.journey.failedStep = SUBPROCESS_APP_LOAD_OR_EXEC;
-			SpawnException e("Error spawning the web application:"
-				" the application's spawn response is invalid: "
-				+ toString(appSuppliedFieldErrors),
-				config,
+			SpawnException e(
+				INTERNAL_ERROR,
 				session.journey,
-				SpawnException::INTERNAL_ERROR,
-				string(),
-				session.responseDir);
+				config);
+			e.setSummary("Error spawning the web application:"
+				" the application's spawn response is invalid: "
+				+ toString(appSuppliedFieldErrors));
+			e.setAdvancedProblemDetails(toString(appSuppliedFieldErrors));
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadAnnotationsFromEnvDumpDir(e);
 
 			message = "<p>The " PROGRAM_NAME " application server tried"
 				" to start the web application, but encountered a bug"
@@ -519,6 +593,7 @@ private:
 				" did not communicate back that correctly."
 				" The errors are as follows:</p>"
 				"<ul>";
+			end = appSuppliedFieldErrors.end();
 			for (it = appSuppliedFieldErrors.begin(); it != end; it++) {
 				message.append("<li>" + escapeHTML(*it) + "</li>");
 			}
@@ -540,7 +615,408 @@ private:
 					" to the " SHORT_PROGRAM_NAME " authors.</p>");
 			}
 
-			throw e;
+			throw e.finalize();
+		}
+	}
+
+	ErrorCategory inferErrorCategoryFromResponseDir(ErrorCategory defaultValue) const {
+		if (fileExists(session.responseDir + "/error/category")) {
+			string value = strip(readAll(session.responseDir + "/error/category"));
+			ErrorCategory category = stringToErrorCategory(value);
+
+			if (category == UNKNOWN_ERROR_CATEGORY) {
+				SpawnException e(
+					INTERNAL_ERROR,
+					session.journey,
+					config);
+				e.setStdoutAndErrData(getStdoutErrData());
+				loadAnnotationsFromEnvDumpDir(e);
+
+				if (!config->genericApp && config->startsUsingWrapper) {
+					if (config->wrapperSuppliedByThirdParty) {
+						e.setSummary(
+							"An error occurred while spawning an application process: "
+							"the application wrapper (which is internal to "
+							SHORT_PROGRAM_NAME
+							") reported an invalid progress step state: "
+							+ value);
+					} else {
+						e.setSummary(
+							"An error occurred while spawning an application process: "
+							"the application wrapper (which is not part of "
+							SHORT_PROGRAM_NAME
+							") reported an invalid progress step state: "
+							+ value);
+					}
+				} else {
+					e.setSummary(
+						"An error occurred while spawning an application process: "
+						"the application reported an invalid progress step state: "
+						+ value);
+				}
+
+				if (!config->genericApp && config->startsUsingWrapper) {
+					if (config->wrapperSuppliedByThirdParty) {
+						e.setProblemDescriptionHTML(
+							"<p>The " PROGRAM_NAME " application server tried"
+							" to start the web application through a " SHORT_PROGRAM_NAME
+							"-internal helper tool called the \"wrapper\". "
+							" The tool encountered an error, so "
+							SHORT_PROGRAM_NAME " expected the tool to report"
+							" details about that error. But the tool communicated back"
+							" in an invalid format:</p>"
+							"<ul>"
+							"<li>In file: " + escapeHTML(session.responseDir) + "/error/category</li>"
+							"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+							"</ul>");
+						e.setSolutionDescriptionHTML(
+							"<p class=\"sole-solution\">"
+							"This is a bug in the wrapper, so please contact the author of"
+							" the wrapper. This problem is outside " SHORT_PROGRAM_NAME
+							"'s control. Below follows the command that "
+							SHORT_PROGRAM_NAME " tried to execute, so that you can infer"
+							" which wrapper was used:</p>"
+							"<pre>" + escapeHTML(config->startCommand) + "</pre>");
+					} else {
+						e.setProblemDescriptionHTML(
+							"<p>The " PROGRAM_NAME " application server tried"
+							" to start the web application through a "
+							" helper tool called the \"wrapper\". This helper tool "
+							" is not part of " SHORT_PROGRAM_NAME ". The tool "
+							" encountered an error, so " SHORT_PROGRAM_NAME
+							" expected the tool to report details about that error."
+							" But the tool communicated back in an invalid format:</p>"
+							"<ul>"
+							"<li>In file: " + escapeHTML(session.responseDir) + "/error/category</li>"
+							"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+							"</ul>");
+						e.setSolutionDescriptionHTML(
+							"<p class=\"sole-solution\">"
+							"This is a bug in " SHORT_PROGRAM_NAME "."
+							" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
+							" to the " SHORT_PROGRAM_NAME " authors.</p>");
+					}
+				} else {
+					e.setProblemDescriptionHTML(
+						"<p>The " PROGRAM_NAME " application server tried"
+						" to start the web application. The application encountered "
+						" an error and tried to report details about the error back to "
+						SHORT_PROGRAM_NAME ". But the application communicated back"
+						" in an invalid format:</p>"
+						"<ul>"
+						"<li>In file: " + escapeHTML(session.responseDir) + "/error/category</li>"
+							"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+						"</ul>");
+					e.setSolutionDescriptionHTML(
+						"<p class=\"sole-solution\">"
+						"This is a bug in the web application, please "
+						"report this problem to the application's developer. "
+						"This problem is outside " SHORT_PROGRAM_NAME "'s "
+						"control.</p>");
+				}
+
+				throw e.finalize();
+			} else {
+				return category;
+			}
+		} else {
+			return defaultValue;
+		}
+	}
+
+	void loadJourneyStateFromResponseDir() {
+		JourneyStep firstStep = JourneyStep((int) getFirstSubprocessJourneyStep() + 1);
+		JourneyStep lastStep = getLastSubprocessJourneyStep();
+		JourneyStep step;
+
+		for (step = firstStep; step < lastStep; step = JourneyStep((int) step + 1)) {
+			if (!session.journey.hasStep(step)) {
+				continue;
+			}
+
+			string stepString = journeyStepToStringLowerCase(step);
+			string stepDir = session.responseDir + "/steps/" + stepString;
+			if (!fileExists(stepDir + "/state")) {
+				continue;
+			}
+
+			loadJourneyStateFromResponseDirForSpecificStep(
+				step, stepDir);
+		}
+	}
+
+	void loadJourneyStateFromResponseDirForSpecificStep(JourneyStep step,
+		const string &stepDir) const
+	{
+		string summary;
+		string value = strip(readAll(stepDir + "/state"));
+		JourneyStepState state = stringToJourneyStepState(value);
+
+		if (session.journey.getStepInfo(step).state == state) {
+			return;
+		}
+
+		try {
+			switch (state) {
+			case STEP_IN_PROGRESS:
+				session.journey.setStepInProgress(step);
+				break;
+			case STEP_PERFORMED:
+				session.journey.setStepPerformed(step);
+				break;
+			case STEP_ERRORED:
+				session.journey.setStepErrored(step);
+				break;
+			default:
+				session.journey.setStepErrored(step);
+
+				SpawnException e(
+					INTERNAL_ERROR,
+					session.journey,
+					config);
+				e.setStdoutAndErrData(getStdoutErrData());
+				loadAnnotationsFromEnvDumpDir(e);
+
+				if (!config->genericApp && config->startsUsingWrapper) {
+					if (config->wrapperSuppliedByThirdParty) {
+						e.setSummary(
+							"An error occurred while spawning an application process: "
+							"the application wrapper (which is internal to " SHORT_PROGRAM_NAME
+							") reported an invalid progress step state: "
+							+ value);
+					} else {
+						e.setSummary(
+							"An error occurred while spawning an application process: "
+							"the application wrapper (which is not part of " SHORT_PROGRAM_NAME
+							") reported an invalid progress step state: "
+							+ value);
+					}
+				} else {
+					e.setSummary(
+						"An error occurred while spawning an application process: "
+						"the application reported an invalid progress step state: "
+						+ value);
+				}
+
+				if (!config->genericApp && config->startsUsingWrapper) {
+					if (config->wrapperSuppliedByThirdParty) {
+						e.setProblemDescriptionHTML(
+							"<p>The " PROGRAM_NAME " application server tried"
+							" to start the web application through a " SHORT_PROGRAM_NAME
+							"-internal helper tool called the \"wrapper\", "
+							" but " SHORT_PROGRAM_NAME " encountered a bug"
+							" in this helper tool. " SHORT_PROGRAM_NAME " expected"
+							" the helper tool to report about its startup progress,"
+							" but the tool communicated back an invalid answer:</p>"
+							"<ul>"
+							"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+							"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+							"</ul>");
+						e.setSolutionDescriptionHTML(
+							"<p class=\"sole-solution\">"
+							"This is a bug in the wrapper, so please contact the author of"
+							" the wrapper. This problem is outside " SHORT_PROGRAM_NAME
+							"'s control. Below follows the command that "
+							SHORT_PROGRAM_NAME " tried to execute, so that you can infer"
+							" which wrapper was used:</p>"
+							"<pre>" + escapeHTML(config->startCommand) + "</pre>");
+					} else {
+						e.setProblemDescriptionHTML(
+							"<p>The " PROGRAM_NAME " application server tried"
+							" to start the web application through a "
+							" helper tool called the \"wrapper\". This helper tool "
+							" is not part of " SHORT_PROGRAM_NAME ". "
+							SHORT_PROGRAM_NAME " expected the helper tool to"
+							" report about its startup progress, but the tool"
+							" communicated back an invalid answer:</p>"
+							"<ul>"
+							"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+							"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+							"</ul>");
+						e.setSolutionDescriptionHTML(
+							"<p class=\"sole-solution\">"
+							"This is a bug in " SHORT_PROGRAM_NAME "."
+							" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
+							" to the " SHORT_PROGRAM_NAME " authors.</p>");
+					}
+				} else {
+					e.setProblemDescriptionHTML(
+						"<p>The " PROGRAM_NAME " application server tried"
+						" to start the web application, and expected the application"
+						" to report about its startup progress. But the application"
+						" communicated back an invalid answer:</p>"
+						"<ul>"
+						"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+						"<li>Content: <code>" + escapeHTML(value) + "</code></li>"
+						"</ul>");
+					e.setSolutionDescriptionHTML(
+						"<p class=\"sole-solution\">"
+						"This is a bug in the web application, please "
+						"report this problem to the application's developer. "
+						"This problem is outside " SHORT_PROGRAM_NAME "'s "
+						"control.</p>");
+				}
+
+				throw e.finalize();
+				break;
+			};
+		} catch (const RuntimeException &originalException) {
+			session.journey.setStepErrored(step, true);
+
+			SpawnException e(
+				INTERNAL_ERROR,
+				session.journey,
+				config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			loadAnnotationsFromEnvDumpDir(e);
+
+			if (!config->genericApp && config->startsUsingWrapper) {
+				if (config->wrapperSuppliedByThirdParty) {
+					e.setSummary("An error occurred while spawning an application process: "
+						"the application wrapper (which is internal to " SHORT_PROGRAM_NAME
+						") reported an invalid progress step state: "
+						+ StaticString(originalException.what()));
+				} else {
+					e.setSummary("An error occurred while spawning an application process: "
+						"the application wrapper (which is not part of " SHORT_PROGRAM_NAME
+						") reported an invalid progress step state: "
+						+ StaticString(originalException.what()));
+				}
+			} else {
+				e.setSummary("An error occurred while spawning an application process: "
+					"the application reported an invalid progress step state: "
+					+ StaticString(originalException.what()));
+			}
+
+			if (!config->genericApp && config->startsUsingWrapper) {
+				if (config->wrapperSuppliedByThirdParty) {
+					e.setProblemDescriptionHTML(
+						"<p>The " PROGRAM_NAME " application server tried"
+						" to start the web application through a " SHORT_PROGRAM_NAME
+						"-internal helper tool called the \"wrapper\", "
+						" but " SHORT_PROGRAM_NAME " encountered a bug"
+						" in this helper tool. " SHORT_PROGRAM_NAME " expected"
+						" the helper tool to report about its startup progress,"
+						" but the tool communicated back an invalid answer:</p>"
+						"<ul>"
+						"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+						"<li>Error: " + escapeHTML(originalException.what()) + "</li>"
+						"</ul>");
+					e.setSolutionDescriptionHTML(
+						"<p class=\"sole-solution\">"
+						"This is a bug in the wrapper, so please contact the author of"
+						" the wrapper. This problem is outside " SHORT_PROGRAM_NAME
+						"'s control. Below follows the command that "
+						SHORT_PROGRAM_NAME " tried to execute, so that you can infer"
+						" which wrapper was used:</p>"
+						"<pre>" + escapeHTML(config->startCommand) + "</pre>");
+				} else {
+					e.setProblemDescriptionHTML(
+						"<p>The " PROGRAM_NAME " application server tried"
+						" to start the web application through a "
+						" helper tool called the \"wrapper\". This helper tool "
+						" is not part of " SHORT_PROGRAM_NAME ". "
+						SHORT_PROGRAM_NAME " expected the helper tool to"
+						" report about its startup progress, but the tool"
+						" communicated back an invalid answer:</p>"
+						"<ul>"
+						"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+						"<li>Error: " + escapeHTML(originalException.what()) + "</li>"
+						"</ul>");
+					e.setSolutionDescriptionHTML(
+						"<p class=\"sole-solution\">"
+						"This is a bug in " SHORT_PROGRAM_NAME "."
+						" <a href=\"" SUPPORT_URL "\">Please report this bug</a>"
+						" to the " SHORT_PROGRAM_NAME " authors.</p>");
+				}
+			} else {
+				e.setProblemDescriptionHTML(
+					"<p>The " PROGRAM_NAME " application server tried"
+					" to start the web application, and expected the application"
+					" to report about its startup progress. But the application"
+					" communicated back an invalid answer:</p>"
+					"<ul>"
+					"<li>In file: " + escapeHTML(stepDir) + "/state</li>"
+					"<li>Error: " + escapeHTML(originalException.what()) + "</li>"
+					"</ul>");
+				e.setSolutionDescriptionHTML(
+					"<p class=\"sole-solution\">"
+					"This is a bug in the web application, please "
+					"report this problem to the application's developer. "
+					"This problem is outside " SHORT_PROGRAM_NAME "'s "
+					"control.</p>");
+			}
+
+			throw e.finalize();
+		}
+
+		if (fileExists(stepDir + "/duration")) {
+			value = readAll(stepDir + "/duration");
+			unsigned long long usecDuration = stringToULL(value) * 1000000;
+			session.journey.setStepExecutionDuration(step, usecDuration);
+		}
+	}
+
+	void loadSubprocessErrorMessagesAndAnnotations(SpawnException &e) const {
+		const string &responseDir = session.responseDir;
+		const string &envDumpDir = session.envDumpDir;
+
+		if (fileExists(responseDir + "/error/summary")) {
+			e.setSummary(strip(readAll(responseDir + "/error/summary")));
+		}
+
+		if (e.getAdvancedProblemDetails().empty()
+		 && fileExists(responseDir + "/error/advanced_problem_details"))
+		{
+			e.setAdvancedProblemDetails(strip(readAll(responseDir
+				+ "/error/advanced_problem_details")));
+		}
+
+		if (fileExists(responseDir + "/error/problem_description.html")) {
+			e.setProblemDescriptionHTML(readAll(responseDir + "/error/problem_description.html"));
+		} else if (fileExists(responseDir + "/error/problem_description.txt")) {
+			e.setProblemDescriptionHTML(escapeHTML(strip(readAll(
+				responseDir + "/error/problem_description.txt"))));
+		}
+
+		if (fileExists(responseDir + "/error/solution_description.html")) {
+			e.setSolutionDescriptionHTML(readAll(responseDir + "/error/solution_description.html"));
+		} else if (fileExists(responseDir + "/error/solution_description.txt")) {
+			e.setSolutionDescriptionHTML(escapeHTML(strip(readAll(
+				responseDir + "/error/solution_description.txt"))));
+		}
+
+		if (fileExists(envDumpDir + "/envvars")) {
+			e.setSubprocessEnvvars(readAll(envDumpDir + "/envvars"));
+		}
+		if (fileExists(envDumpDir + "/user_info")) {
+			e.setSubprocessUserInfo(readAll(envDumpDir + "/user_info"));
+		}
+		if (fileExists(envDumpDir + "/ulimits")) {
+			e.setSubprocessUlimits(readAll(envDumpDir + "/ulimits"));
+		}
+
+		loadAnnotationsFromEnvDumpDir(e);
+	}
+
+	static void doClosedir(DIR *dir) {
+		closedir(dir);
+	}
+
+	void loadAnnotationsFromEnvDumpDir(SpawnException &e) const {
+		string path = session.envDumpDir + "/annotations";
+		DIR *dir = opendir(path.c_str());
+		if (dir == NULL) {
+			return;
+		}
+
+		ScopeGuard guard(boost::bind(doClosedir, dir));
+		struct dirent *ent;
+		while ((ent = readdir(dir)) != NULL) {
+			if (ent->d_name[0] != '.') {
+				e.setAnnotation(ent->d_name, strip(
+					Passenger::readAll(path + "/" + ent->d_name)));
+			}
 		}
 	}
 
@@ -592,7 +1068,7 @@ public:
 		TRACE_POINT();
 		ScopeGuard guard(boost::bind(&HandshakePerform::cleanup, this));
 
-		session.journey.currentStep = PASSENGER_CORE_HANDSHAKE_PERFORM;
+		session.journey.setStepInProgress(SPAWNING_KIT_HANDSHAKE_PERFORM);
 
 		try {
 			initializeStdchannelsCapturing();
@@ -603,28 +1079,34 @@ public:
 			if (!config->genericApp) {
 				startWatchingFinishSignal();
 			}
-		} catch (const std::exception &e) {
+		} catch (const std::exception &originalException) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.failedStep = PASSENGER_CORE_HANDSHAKE_PERFORM;
-			throw SpawnException(e, config, session.journey,
-				getStdouterrData(), session.responseDir);
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+			loadJourneyStateFromResponseDir();
+			SpawnException e(originalException, session.journey, config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			throw e.finalize();
 		}
 
 		UPDATE_TRACE_POINT();
 		try {
 			boost::unique_lock<boost::mutex> l(syncher);
 			waitUntilSpawningFinished(l);
-			return handleResponse();
+			Result result = handleResponse();
+			session.journey.setStepPerformed(SPAWNING_KIT_HANDSHAKE_PERFORM);
+			loadJourneyStateFromResponseDir();
+			return result;
 		} catch (const SpawnException &) {
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
 			throw;
-		} catch (const std::exception &e) {
+		} catch (const std::exception &originalException) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.failedStep = PASSENGER_CORE_DURING_HANDSHAKE;
-			throw SpawnException(e, config, session.journey,
-				getStdouterrData(), session.responseDir);
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+			loadJourneyStateFromResponseDir();
+			SpawnException e(originalException, session.journey, config);
+			e.setStdoutAndErrData(getStdoutErrData());
+			throw e.finalize();
 		}
-
-		session.journey.doneSteps.insert(PASSENGER_CORE_HANDSHAKE_PERFORM);
 	}
 };
 

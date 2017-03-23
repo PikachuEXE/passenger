@@ -49,6 +49,7 @@ struct HandshakeSession {
 
 	boost::scoped_ptr<HandshakeWorkDir> workDir;
 	string responseDir;
+	string envDumpDir;
 	Journey journey;
 	Result result;
 
@@ -65,10 +66,10 @@ struct HandshakeSession {
 	 */
 	unsigned int expectedStartPort;
 
-	HandshakeSession(JourneyType journeyType)
-		: context(NULL),
-		  config(NULL),
-		  journey(journeyType),
+	HandshakeSession(Context &context, Config &config, JourneyType journeyType)
+		: context(&context),
+		  config(&config),
+		  journey(journeyType, !config.genericApp && config.startsUsingWrapper),
 		  uid(USER_NOT_GIVEN),
 		  gid(GROUP_NOT_GIVEN),
 		  timeoutUsec(0),

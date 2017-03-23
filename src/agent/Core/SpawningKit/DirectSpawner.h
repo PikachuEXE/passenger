@@ -27,8 +27,8 @@
 #define _PASSENGER_SPAWNING_KIT_DIRECT_SPAWNER_H_
 
 #include <Core/SpawningKit/Spawner.h>
-#include <Core/SpawningKit/HandshakePrepare.h>
-#include <Core/SpawningKit/HandshakePerform.h>
+#include <Core/SpawningKit/Handshake/Prepare.h>
+#include <Core/SpawningKit/Handshake/Perform.h>
 #include <Constants.h>
 #include <Logging.h>
 #include <Utils/IOUtils.h>
@@ -137,9 +137,9 @@ public:
 		Config config(options);
 		Json::Value extraArgs;
 		Result result;
-		HandshakeSession session;
-		session.context = context;
-		session.config = &config;
+		HandshakeSession session(context, config, SPAWN_DIRECTLY);
+
+		// TODO: we should catch exceptions here and rethrow as SpawnException
 
 		setConfigFromAppPoolOptions(config, extraArgs, options);
 		HandshakePrepare(session, extraArgs).execute();
@@ -154,6 +154,8 @@ public:
 			session.uid,
 			config.lveMinUid);
 
+		session.journey.setStepInProgress(SPAWNING_KIT_FORK_SUBPROCESS);
+		session.journey.setStepInProgress(SUBPROCESS_BEFORE_FIRST_EXEC);
 		pid_t pid = syscalls::fork();
 		if (pid == 0) {
 			purgeStdio(stdout);
@@ -181,10 +183,20 @@ public:
 
 		} else if (pid == -1) {
 			int e = errno;
-			throw SystemException("Cannot fork a new process", e);
+			session.journey.setStepErrored(SPAWNING_KIT_FORK_SUBPROCESS);
+			session.journey.setStepNotStarted(SPAWNING_KIT_FORK_SUBPROCESS);
+			SpawnException e(OPERATING_SYSTEM_ERROR, session.journey, session.config);
+			e.setSummary("Cannot fork a new process: " + strerror(e)
+				+ " (errno=" + toString(e) + ")");
+			e.setAdvancedProblemDetails("Cannot fork a new process: " + strerror(e)
+				+ " (errno=" + toString(e) + ")");
+			throw e.finalize();
 
 		} else {
 			UPDATE_TRACE_POINT();
+			session.journey.setStepPerformed(SPAWNING_KIT_FORK_SUBPROCESS);
+			session.journey.setStepInProgress(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			scopedLveEnter.exit();
 
 			P_LOG_FILE_DESCRIPTOR_PURPOSE(stdinChannel.second,

@@ -206,7 +206,7 @@ struct Ticket {
 
 ExceptionPtr copyException(const tracable_exception &e);
 void rethrowException(const ExceptionPtr &e);
-void processAndLogNewSpawnException(SpawnException &e, const Options &options,
+void processAndLogNewSpawnException(SpawningKit::SpawnException &e, const Options &options,
 	const SpawningKit::ConfigPtr &config);
 void recreateString(psg_pool_t *pool, StaticString &str);
 

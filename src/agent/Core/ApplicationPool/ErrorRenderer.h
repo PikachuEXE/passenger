@@ -60,7 +60,7 @@ public:
 
 	string renderWithDetails(const StaticString &message,
 		const Options &options,
-		const SpawnException *e = NULL) const
+		const SpawningKit::SpawnException *e = NULL) const
 	{
 		string generalErrorFile =
 			(e != NULL && e->isHTML())
@@ -100,7 +100,7 @@ public:
 		return Template::apply(readAll(errorLayoutFile), params);
 	}
 
-	string renderWithoutDetails(const SpawnException *e = NULL) const {
+	string renderWithoutDetails(const SpawningKit::SpawnException *e = NULL) const {
 		string templateFile = templatesDir + "/undisclosed_error.html.template";
 		string css = readAll(cssFile);
 		StringMap<StaticString> params;

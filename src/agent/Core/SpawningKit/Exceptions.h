@@ -61,6 +61,7 @@ enum ErrorCategory {
 	UNKNOWN_ERROR_CATEGORY
 };
 
+inline StaticString errorCategoryToString(ErrorCategory category);
 inline ErrorCategory inferErrorCategoryFromAnotherException(const std::exception &e,
 	JourneyStep failedJourneyStep);
 
@@ -82,6 +83,7 @@ private:
 	string problemDescription;
 	string solutionDescription;
 	string stdoutAndErrData;
+	string id;
 
 	EnvDump parentProcessEnvDump;
 	EnvDump preloaderEnvDump;
@@ -636,6 +638,12 @@ private:
 			} else {
 				return P_STATIC_STRING("an I/O error");
 			}
+		case TIMEOUT_ERROR:
+			if (beginOfSentence) {
+				return P_STATIC_STRING("A timeout error");
+			} else {
+				return P_STATIC_STRING("a timeout error");
+			}
 		default:
 			P_BUG("Unsupported error category " + toString((int) category));
 			return StaticString();
@@ -799,6 +807,14 @@ public:
 		stdoutAndErrData = value;
 	}
 
+	const string &getId() const {
+		return id;
+	}
+
+	void setId(const string &value) {
+		id = value;
+	}
+
 	SpawnException &finalize() {
 		if (summary.empty()) {
 			summary = createDefaultSummary(category, journey,
@@ -896,6 +912,69 @@ public:
 		bool overwrite = true)
 	{
 		annotations.insert(name, value, overwrite);
+	}
+
+	Json::Value inspectBasicInfoAsJson() const {
+		Json::Value doc;
+
+		doc["category"] = errorCategoryToString(category).toString();
+		doc["summary"] = summary;
+		doc["problem_description_html"] = problemDescription;
+		doc["solution_description_html"] = solutionDescription;
+		if (!advancedProblemDetails.empty()) {
+			doc["aux_details"] = advancedProblemDetails;
+		}
+		if (!id.empty()) {
+			doc["id"] = id;
+		}
+
+		return doc;
+	}
+
+	Json::Value inspectSystemWideDetailsAsJson() const {
+		Json::Value doc;
+
+		doc["system_metrics"] = systemMetrics;
+
+		return doc;
+	}
+
+	Json::Value inspectParentProcessDetailsAsJson() const {
+		Json::Value doc;
+
+		doc["envvars"] = getParentProcessEnvvars();
+		doc["user_info"] = getParentProcessUserInfo();
+		doc["ulimits"] = getParentProcessUlimits();
+
+		return doc;
+	}
+
+	Json::Value inspectPreloaderProcessDetailsAsJson() const {
+		Json::Value doc;
+
+		doc["envvars"] = getPreloaderEnvvars();
+		doc["user_info"] = getPreloaderUserInfo();
+		doc["ulimits"] = getPreloaderUlimits();
+
+		return doc;
+	}
+
+	Json::Value inspectSubprocessDetailsAsJson() const {
+		Json::Value doc, annotations(Json::objectValue);
+
+		doc["envvars"] = getSubprocessEnvvars();
+		doc["user_info"] = getSubprocessUserInfo();
+		doc["ulimits"] = getSubprocessUlimits();
+		doc["stdout_and_err"] = getStdoutAndErrData();
+
+		StringKeyTable<string>::ConstIterator it(this->annotations);
+		while (*it != NULL) {
+			annotations[it.getKey().toString()] = it.getValue();
+			it.next();
+		}
+		doc["annotations"] = annotations;
+
+		return doc;
 	}
 };
 

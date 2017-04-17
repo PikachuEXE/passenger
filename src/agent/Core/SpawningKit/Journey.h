@@ -32,6 +32,8 @@
 #include <oxt/macros.hpp>
 #include <oxt/backtrace.hpp>
 
+#include <jsoncpp/json.h>
+
 #include <Logging.h>
 #include <StaticString.h>
 #include <Utils/StrIntUtils.h>
@@ -109,6 +111,17 @@ enum JourneyStepState {
 	UNKNOWN_JOURNEY_STEP_STATE
 };
 
+
+inline OXT_PURE StaticString journeyTypeToString(JourneyType type);
+inline OXT_PURE StaticString journeyStepToString(JourneyStep step);
+inline OXT_PURE string journeyStepToStringLowerCase(JourneyStep step);
+inline OXT_PURE StaticString journeyStepStateToString(JourneyStepState state);
+inline OXT_PURE JourneyStepState stringToJourneyStepState(const StaticString &value);
+
+inline OXT_PURE JourneyStep getFirstSubprocessJourneyStep() { return SUBPROCESS_BEFORE_FIRST_EXEC; }
+inline OXT_PURE JourneyStep getLastSubprocessJourneyStep() { return SUBPROCESS_FINISH; }
+
+
 struct JourneyStepInfo {
 	JourneyStepState state;
 	MonotonicTimeUsec startTime;
@@ -123,15 +136,14 @@ struct JourneyStepInfo {
 	unsigned long long usecDuration() const {
 		return endTime - startTime;
 	}
+
+	Json::Value inspectAsJson(JourneyStep step) const {
+		Json::Value doc;
+		doc["state"] = journeyStepStateToString(state).toString();
+		doc["usec_duration"] = usecDuration();
+		return doc;
+	}
 };
-
-inline OXT_PURE StaticString journeyStepToString(JourneyStep step);
-inline OXT_PURE string journeyStepToStringLowerCase(JourneyStep step);
-inline OXT_PURE StaticString journeyStepStateToString(JourneyStepState state);
-inline OXT_PURE JourneyStepState stringToJourneyStepState(const StaticString &value);
-
-inline OXT_PURE JourneyStep getFirstSubprocessJourneyStep() { return SUBPROCESS_BEFORE_FIRST_EXEC; }
-inline OXT_PURE JourneyStep getLastSubprocessJourneyStep() { return SUBPROCESS_FINISH; }
 
 
 class Journey {
@@ -187,7 +199,6 @@ private:
 
 	void fillInStepsForSpawnThroughPreloaderJourney() {
 		insertStep(SPAWNING_KIT_PREPARATION);
-		insertStep(SPAWNING_KIT_FORK_SUBPROCESS);
 		insertStep(SPAWNING_KIT_CONNECT_TO_PRELOADER);
 		insertStep(SPAWNING_KIT_SEND_COMMAND_TO_PRELOADER);
 		insertStep(SPAWNING_KIT_READ_RESPONSE_FROM_PRELOADER);
@@ -276,14 +287,17 @@ public:
 		}
 	}
 
-	void setStepInProgress(JourneyStep step) {
+	void setStepInProgress(JourneyStep step, bool force = false) {
 		JourneyStepInfo &info = getStepInfoMutable(step);
 		if (info.state == STEP_IN_PROGRESS) {
 			return;
-		} else if (info.state == STEP_NOT_STARTED) {
+		} else if (info.state == STEP_NOT_STARTED || force) {
 			info.state = STEP_IN_PROGRESS;
-			info.startTime =
-				SystemTime::getMonotonicUsecWithGranularity<SystemTime::GRAN_10MSEC>();
+			// When `force` is true, we don't want to overwrite the previous endTime.
+			if (info.endTime == 0) {
+				info.startTime =
+					SystemTime::getMonotonicUsecWithGranularity<SystemTime::GRAN_10MSEC>();
+			}
 		} else {
 			throw RuntimeException("Unable to change state for journey step "
 				+ journeyStepToString(step)
@@ -291,14 +305,17 @@ public:
 		}
 	}
 
-	void setStepPerformed(JourneyStep step) {
+	void setStepPerformed(JourneyStep step, bool force = false) {
 		JourneyStepInfo &info = getStepInfoMutable(step);
 		if (info.state == STEP_PERFORMED) {
 			return;
-		} else if (info.state == STEP_IN_PROGRESS) {
+		} else if (info.state == STEP_IN_PROGRESS || true) {
 			info.state = STEP_PERFORMED;
-			info.endTime =
-				SystemTime::getMonotonicUsecWithGranularity<SystemTime::GRAN_10MSEC>();
+			// When `force` is true, we don't want to overwrite the previous endTime.
+			if (info.endTime == 0) {
+				info.endTime =
+					SystemTime::getMonotonicUsecWithGranularity<SystemTime::GRAN_10MSEC>();
+			}
 		} else {
 			throw RuntimeException("Unable to change state for journey step "
 				+ journeyStepToString(step) + " because it wasn't already in progress");
@@ -327,8 +344,37 @@ public:
 		info.startTime = 0;
 		info.endTime = usecDuration;
 	}
+
+	Json::Value inspectAsJson() const {
+		Json::Value doc, steps;
+		doc["type"] = journeyTypeToString(type).toString();
+
+		Map::const_iterator it, end = this->steps.end();
+		for (it = this->steps.begin(); it != end; it++) {
+			const JourneyStep step = it->first;
+			const JourneyStepInfo &info = it->second;
+			steps[journeyStepToString(step).toString()] = info.inspectAsJson(step);
+		}
+		doc["steps"] = steps;
+
+		return doc;
+	}
 };
 
+
+inline OXT_PURE StaticString
+journeyTypeToString(JourneyType type) {
+	switch (type) {
+	case SPAWN_DIRECTLY:
+		return P_STATIC_STRING("SPAWN_DIRECTLY");
+	case START_PRELOADER:
+		return P_STATIC_STRING("START_PRELOADER");
+	case SPAWN_THROUGH_PRELOADER:
+		return P_STATIC_STRING("SPAWN_THROUGH_PRELOADER");
+	default:
+		return P_STATIC_STRING("UNKNOWN_JOURNEY_TYPE");
+	}
+}
 
 inline OXT_PURE StaticString
 journeyStepToString(JourneyStep step) {

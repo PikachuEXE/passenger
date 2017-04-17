@@ -59,6 +59,7 @@
 #include <Utils/StrIntUtils.h>
 #include <Core/SpawningKit/Context.h>
 #include <Core/SpawningKit/Config.h>
+#include <Core/SpawningKit/Journey.h>
 #include <Core/SpawningKit/Exceptions.h>
 #include <Core/SpawningKit/Handshake/Session.h>
 #include <Core/SpawningKit/Handshake/WorkDir.h>
@@ -108,8 +109,12 @@ private:
 				throw SystemException("Cannot lookup up system user database entry"
 					" for user '" + username + "'", ret);
 			}
+		} else if (userInfo == NULL) {
+			throw RuntimeException("The operating system user '" + username + "' does not exist");
 		} else {
 			session.uid = userInfo->pw_uid;
+			session.shell = userInfo->pw_shell;
+			session.homedir = userInfo->pw_dir;
 		}
 
 		ret = getgrnam_r(groupname.c_str(), &grp, grpBuf.get(), grpBufSize,
@@ -124,6 +129,8 @@ private:
 				throw SystemException("Cannot lookup up system group database entry"
 					" for group '" + groupname + "'", ret);
 			}
+		} else if (groupInfo == NULL) {
+			throw RuntimeException("The operating system group '" + groupname + "' does not exist");
 		} else {
 			session.gid = groupInfo->gr_gid;
 		}
@@ -157,6 +164,21 @@ private:
 			"u=rwx,g=,o=",
 			session.uid,
 			session.gid);
+
+
+		JourneyStep firstStep = JourneyStep((int) getFirstSubprocessJourneyStep() + 1);
+		JourneyStep lastStep = getLastSubprocessJourneyStep();
+		JourneyStep step;
+
+		for (step = firstStep; step < lastStep; step = JourneyStep((int) step + 1)) {
+			if (!session.journey.hasStep(step)) {
+				continue;
+			}
+
+			string stepString = journeyStepToStringLowerCase(step);
+			string stepDir = session.responseDir + "/steps/" + stepString;
+			makeDirTree(stepDir, "u=rwx,g=,o=", session.uid, session.gid);
+		}
 	}
 
 	void createFifo(const string &path) {
@@ -383,10 +405,7 @@ private:
 
 	void throwSpawnExceptionBecauseOfPortFindingTimeout() {
 		assert(config->genericApp || config->findFreePort);
-		SpawnException e(
-			TIMEOUT_ERROR,
-			session.journey,
-			config);
+		SpawnException e(TIMEOUT_ERROR, session.journey, config);
 		e.setProblemDescriptionHTML(
 			"<p>The " PROGRAM_NAME " application server tried"
 			" to look for a free TCP port for the web application"
@@ -441,10 +460,7 @@ private:
 			maxPortRange = context->maxPortRange;
 		}
 
-		SpawnException e(
-			INTERNAL_ERROR,
-			session.journey,
-			config);
+		SpawnException e(INTERNAL_ERROR, session.journey, config);
 		e.setSummary("Could not find a free port to spawn the application on.");
 		e.setProblemDescriptionHTML(
 			"<p>The " PROGRAM_NAME " application server tried"
@@ -467,15 +483,25 @@ private:
 	}
 
 public:
+	struct DebugSupport {
+		virtual ~DebugSupport() { }
+		virtual void beforeAdjustTimeout() { }
+	};
+
+	DebugSupport *debugSupport;
+
+
 	HandshakePrepare(HandshakeSession &_session,
 		const Json::Value &extraArgs = Json::Value())
 		: session(_session),
 		  context(_session.context),
 		  config(_session.config),
 		  args(extraArgs),
-		  timer(false)
+		  timer(false),
+		  debugSupport(NULL)
 	{
 		assert(_session.context != NULL);
+		assert(_session.context->isFinalized());
 		assert(_session.config != NULL);
 	}
 
@@ -503,6 +529,10 @@ public:
 			preparePredefinedArgs();
 			prepareArgsFromAppConfig();
 			dumpArgsIntoWorkDir();
+
+			if (debugSupport != NULL) {
+				debugSupport->beforeAdjustTimeout();
+			}
 
 			adjustTimeout();
 		} catch (const SpawnException &) {

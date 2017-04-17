@@ -83,8 +83,8 @@ public:
 
 	/****** Configuration objects ******/
 
-	const SpawningKit::ConfigPtr &getSpawningKitConfig() const {
-		return mSpawningKitFactory->getConfig();
+	SpawningKit::Context *getSpawningKitContext() const {
+		return mSpawningKitFactory->getContext();
 	}
 };
 

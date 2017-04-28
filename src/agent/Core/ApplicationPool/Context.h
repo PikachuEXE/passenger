@@ -26,6 +26,7 @@
 #ifndef _PASSENGER_APPLICATION_POOL2_CONTEXT_H_
 #define _PASSENGER_APPLICATION_POOL2_CONTEXT_H_
 
+#include <boost/shared_ptr.hpp>
 #include <boost/thread.hpp>
 #include <boost/pool/object_pool.hpp>
 #include <Exceptions.h>
@@ -64,6 +65,7 @@ public:
 	/****** Dependencies ******/
 
 	SpawningKit::FactoryPtr spawningKitFactory;
+	UnionStation::ContextPtr unionStationContext;
 	VariantMap *agentsOptions;
 
 
@@ -89,7 +91,13 @@ public:
 	ResourceLocator *getResourceLocator() const {
 		return getSpawningKitContext()->resourceLocator;
 	}
+
+	const RandomGeneratorPtr &getRandomGenerator() const {
+		return getSpawningKitContext()->randomGenerator;
+	}
 };
+
+typedef boost::shared_ptr<Context> ContextPtr;
 
 
 } // namespace ApplicationPool2

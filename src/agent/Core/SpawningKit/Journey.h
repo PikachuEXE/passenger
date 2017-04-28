@@ -140,7 +140,7 @@ struct JourneyStepInfo {
 	Json::Value inspectAsJson(JourneyStep step) const {
 		Json::Value doc;
 		doc["state"] = journeyStepStateToString(state).toString();
-		doc["usec_duration"] = usecDuration();
+		doc["usec_duration"] = (Json::UInt64) usecDuration();
 		return doc;
 	}
 };
@@ -415,6 +415,8 @@ journeyStepToString(JourneyStep step) {
 		return P_STATIC_STRING("SUBPROCESS_OS_SHELL");
 	case SUBPROCESS_SPAWN_ENV_SETUPPER_AFTER_SHELL:
 		return P_STATIC_STRING("SUBPROCESS_SPAWN_ENV_SETUPPER_AFTER_SHELL");
+	case SUBPROCESS_EXEC_WRAPPER:
+		return P_STATIC_STRING("SUBPROCESS_EXEC_WRAPPER");
 	case SUBPROCESS_WRAPPER_PREPARATION:
 		return P_STATIC_STRING("SUBPROCESS_WRAPPER_PREPARATION");
 	case SUBPROCESS_APP_LOAD_OR_EXEC:

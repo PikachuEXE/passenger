@@ -229,12 +229,12 @@ Pool::getSpawningKitContext() const {
 
 const UnionStation::ContextPtr &
 Pool::getUnionStationContext() const {
-	return getSpawningKitContext()->unionStationContext;
+	return context->unionStationContext;
 }
 
 const RandomGeneratorPtr &
 Pool::getRandomGenerator() const {
-	return getSpawningKitContext()->randomGenerator;
+	return context->getRandomGenerator();
 }
 
 

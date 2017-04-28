@@ -109,7 +109,7 @@ Group::Group(Pool *_pool, const Options &_options)
 	disablingCount = 0;
 	disabledCount  = 0;
 	nEnabledProcessesTotallyBusy = 0;
-	spawner        = getContext()->getSpawningKitFactory()->create(options);
+	spawner        = getContext()->spawningKitFactory->create(options);
 	restartsInitiated = 0;
 	processesBeingSpawned = 0;
 	m_spawning     = false;

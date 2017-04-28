@@ -72,6 +72,15 @@ getJsonField(Json::Value &json, const char *key) {
 
 
 inline int
+getJsonIntField(const Json::Value &json, const char *key) {
+	if (json.isMember(key)) {
+		return json[key].asInt();
+	} else {
+		throw VariantMap::MissingKeyException(key);
+	}
+}
+
+inline int
 getJsonIntField(const Json::Value &json, const Json::StaticString &key) {
 	if (json.isMember(key)) {
 		return json[key].asInt();
@@ -157,6 +166,15 @@ getJsonUint64Field(const Json::Value &json, const char *key, unsigned int defaul
 	}
 }
 
+
+inline StaticString
+getJsonStaticStringField(const Json::Value &json, const char *key) {
+	if (json.isMember(key)) {
+		return json[key].asCString();
+	} else {
+		throw VariantMap::MissingKeyException(key);
+	}
+}
 
 inline StaticString
 getJsonStaticStringField(const Json::Value &json, const Json::StaticString &key) {

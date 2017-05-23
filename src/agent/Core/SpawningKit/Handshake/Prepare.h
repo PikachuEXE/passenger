@@ -241,6 +241,15 @@ private:
 		}
 	}
 
+	void absolutizeKeyArgPaths() {
+		TRACE_POINT();
+		args["app_root"] = absolutizePath(args["app_root"].asString());
+		if (args.isMember("startup_file")) {
+			args["startup_file"] = absolutizePath(args["startup_file"].asString(),
+				args["app_root"].asString());
+		}
+	}
+
 	void dumpArgsIntoWorkDir() {
 		TRACE_POINT();
 		P_DEBUG("[App spawn arg] " << args.toStyledString());
@@ -528,6 +537,7 @@ public:
 			UPDATE_TRACE_POINT();
 			preparePredefinedArgs();
 			prepareArgsFromAppConfig();
+			absolutizeKeyArgPaths();
 			dumpArgsIntoWorkDir();
 
 			if (debugSupport != NULL) {

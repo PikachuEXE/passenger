@@ -4,18 +4,14 @@ use IO::Handle;
 
 STDOUT->autoflush(1);
 STDERR->autoflush(1);
-print("!> I have control 1.0\n");
-die("Invalid initialization header") if (<STDIN> ne "You have control 1.0\n");
 
-my %options = {};
-while ((my $line = <STDIN>) ne "\n") {
-	$line =~ s/\n//;
-	my ($name, $value) = split(/: */, $line, 2);
-	$options{$name} = $value;
-}
+my $workDir = $ENV{PASSENGER_SPAWN_WORK_DIR};
 
-print("!> Error\n");
-print("!> \n");
+my $f;
+open($f, "> $workDir/response/finish");
+print $f '0';
+close($f);
+
 if ($ARGV[0] eq 'freeze') {
 	sleep(1000);
 } else {

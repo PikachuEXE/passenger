@@ -563,7 +563,7 @@ inferAllParentDirectories(const string &path) {
 
 static void
 setCurrentWorkingDirectory(const Context &context) {
-	string appRoot = absolutizePath(context.args["app_root"].asString());
+	string appRoot = context.args["app_root"].asString(); // Already absolutized by HandshakePreparer
 	vector<string> appRootAndParentDirs = inferAllParentDirectories(appRoot);
 	vector<string>::const_iterator it;
 	int ret;

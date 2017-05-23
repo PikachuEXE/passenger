@@ -220,9 +220,12 @@ private:
 	}
 
 	bool checkCurrentState() {
+		TRACE_POINT();
+
 		if ((stdoutAndErrCapturer != NULL && stdoutAndErrCapturer->isStopped())
 		 || processExited)
 		{
+			UPDATE_TRACE_POINT();
 			sleepShortlyToCaptureMoreStdoutStderr();
 			loadJourneyStateFromResponseDir();
 			if (session.journey.getFirstFailedStep() == UNKNOWN_JOURNEY_STEP) {
@@ -240,6 +243,7 @@ private:
 		}
 
 		if (session.timeoutUsec == 0) {
+			UPDATE_TRACE_POINT();
 			sleepShortlyToCaptureMoreStdoutStderr();
 
 			loadJourneyStateFromResponseDir();

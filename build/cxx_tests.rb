@@ -48,8 +48,8 @@ TEST_CXX_OBJECTS = {
     "test/cxx/Core/SpawningKit/HandshakePerformTest.cpp",
   "#{TEST_OUTPUT_DIR}cxx/Core/SpawningKit/UserSwitchingRulesTest.o" =>
     "test/cxx/Core/SpawningKit/UserSwitchingRulesTest.cpp",
-  # "#{TEST_OUTPUT_DIR}cxx/Core/SpawningKit/DirectSpawnerTest.o" =>
-  #   "test/cxx/Core/SpawningKit/DirectSpawnerTest.cpp",
+  "#{TEST_OUTPUT_DIR}cxx/Core/SpawningKit/DirectSpawnerTest.o" =>
+    "test/cxx/Core/SpawningKit/DirectSpawnerTest.cpp",
   # "#{TEST_OUTPUT_DIR}cxx/Core/SpawningKit/SmartSpawnerTest.o" =>
   #   "test/cxx/Core/SpawningKit/SmartSpawnerTest.cpp",
 

@@ -150,8 +150,9 @@ public:
 	StaticString startCommand;
 
 	/**
-	 * The application's entry point file. Only meaningful if
-	 * app is to be loaded through a wrapper.
+	 * The application's entry point file. If a relative path is given, then it
+	 * is relative to the app root. Only meaningful if app is to be loaded through
+	 * a wrapper.
 	 *
 	 * @hinted_parseable
 	 * @only_meaningful_if !config.genericApp && config.startsUsingWrapper

@@ -514,12 +514,37 @@ namespace tut {
 		set_test_name("It raises an error if the application responded with an error");
 
 		init(SPAWN_DIRECTLY);
-		TempThread thr(boost::bind(&Core_SpawningKit_HandshakePerformTest::signalFinishWithError, this));
+		TempThread thr(boost::bind(&Core_SpawningKit_HandshakePerformTest::signalFinishWithError,
+			this));
 
 		try {
 			execute();
 		} catch (const SpawnException &e) {
 			ensure_equals(e.getSummary(), "The web application aborted with an error during startup.");
 		}
+	}
+
+	TEST_METHOD(51) {
+		set_test_name("The exception contains error messages provided by the application");
+
+		fail();
+	}
+
+	TEST_METHOD(52) {
+		set_test_name("The exception describes which steps in the journey had failed");
+
+		fail();
+	}
+
+	TEST_METHOD(53) {
+		set_test_name("The exception contains the subprocess' output");
+
+		fail();
+	}
+
+	TEST_METHOD(54) {
+		set_test_name("The exception contains the subprocess' environment variables dump");
+
+		fail();
 	}
 }

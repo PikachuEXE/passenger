@@ -102,6 +102,7 @@ module PhusionPassenger
       load_app
     end
 
+    handler = nil
     LoaderSharedHelpers.run_block_and_record_step_progress('SUBPROCESS_LISTEN') do
       begin
         LoaderSharedHelpers.before_handling_requests(false, options)

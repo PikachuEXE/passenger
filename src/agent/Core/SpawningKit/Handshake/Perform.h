@@ -241,12 +241,11 @@ private:
 
 		if (session.timeoutUsec == 0) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			loadJourneyStateFromResponseDir();
-			SpawnException e(
-				TIMEOUT_ERROR,
-				session.journey,
-				config);
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
+			SpawnException e(TIMEOUT_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
 			loadSubprocessErrorMessagesAndAnnotations(e);
 			throw e.finalize();
@@ -347,8 +346,10 @@ private:
 	void handleInternalError() {
 		TRACE_POINT();
 		sleepShortlyToCaptureMoreStdoutStderr();
-		session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 		loadJourneyStateFromResponseDir();
+		session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 		SpawnException e(
 			finishSignalWatcherErrorCategory,
 			session.journey,
@@ -532,8 +533,8 @@ private:
 		sleepShortlyToCaptureMoreStdoutStderr();
 
 		if (!config->genericApp && config->startsUsingWrapper) {
-			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 
 			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
@@ -591,8 +592,8 @@ private:
 			throw e.finalize();
 
 		} else {
-			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 
 			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
@@ -624,8 +625,8 @@ private:
 		sleepShortlyToCaptureMoreStdoutStderr();
 
 		if (!config->genericApp && config->startsUsingWrapper) {
-			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 
 			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
@@ -683,8 +684,8 @@ private:
 			throw e.finalize();
 
 		} else {
-			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 
 			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
@@ -721,8 +722,8 @@ private:
 		sleepShortlyToCaptureMoreStdoutStderr();
 
 		if (!internalFieldErrors.empty()) {
-			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM, true);
 
 			SpawnException e(
 				INTERNAL_ERROR,
@@ -757,8 +758,8 @@ private:
 			throw e.finalize();
 
 		} else if (!config->genericApp && config->startsUsingWrapper) {
-			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_WRAPPER_PREPARATION, true);
 
 			SpawnException e(
 				INTERNAL_ERROR,
@@ -830,13 +831,10 @@ private:
 			throw e.finalize();
 
 		} else {
-			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SUBPROCESS_APP_LOAD_OR_EXEC, true);
 
-			SpawnException e(
-				INTERNAL_ERROR,
-				session.journey,
-				config);
+			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setSummary("Error spawning the web application:"
 				" the application's spawn response is invalid: "
 				+ toString(appSuppliedFieldErrors));
@@ -1357,8 +1355,10 @@ public:
 			throw;
 		} catch (const std::exception &originalException) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			SpawnException e(originalException, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
 			throw e.finalize();
@@ -1378,8 +1378,10 @@ public:
 			throw;
 		} catch (const std::exception &originalException) {
 			sleepShortlyToCaptureMoreStdoutStderr();
-			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			loadJourneyStateFromResponseDir();
+			session.journey.setStepErrored(SPAWNING_KIT_HANDSHAKE_PERFORM);
+
 			SpawnException e(originalException, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
 			throw e.finalize();

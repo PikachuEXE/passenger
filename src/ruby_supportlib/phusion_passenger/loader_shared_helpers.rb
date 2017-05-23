@@ -252,7 +252,7 @@ module PhusionPassenger
       end
     end
 
-    def advertise_sockets(options, request_handler)
+    def advertise_sockets(_options, request_handler)
       json = { :sockets => [] }
       request_handler.server_sockets.each_pair do |name, options|
         concurrency = PhusionPassenger.advertised_concurrency_level || options[:concurrency]
@@ -260,7 +260,8 @@ module PhusionPassenger
           :name => name,
           :address => options[:address],
           :protocol => options[:protocol],
-          :concurrency => concurrency
+          :concurrency => concurrency,
+          :accept_http_requests => !!options[:accept_http_requests]
         }
       end
 
@@ -363,7 +364,7 @@ module PhusionPassenger
 
       path = "#{dir}/response/steps/#{info[:step].downcase}/duration"
       duration = Time.now - info[:begin_time]
-      try_write_file(path, (duration * 1_000_000).to_s)
+      try_write_file(path, duration.to_s)
     end
 
     def record_journey_step_performed(info)

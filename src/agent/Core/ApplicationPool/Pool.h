@@ -225,8 +225,6 @@ public:
 	 */
 	vector<GetWaiter> getWaitlist;
 
-	const VariantMap *agentsOptions;
-
 // Actually private, but marked public so that unit tests can access the fields.
 public:
 	/****** Debugging support *******/

@@ -54,6 +54,8 @@ module PhusionPassenger
 
       PhusionPassenger.require_passenger_lib 'loader_shared_helpers'
       PhusionPassenger.require_passenger_lib 'preloader_shared_helpers'
+      PhusionPassenger.require_passenger_lib 'utils/json'
+      require 'socket'
 
       step_info
     end
@@ -93,24 +95,68 @@ module PhusionPassenger
       exit LoaderSharedHelpers.exit_code_for_exception(e)
     end
 
+    def self.create_server(options)
+      if defined?(NativeSupport)
+        unix_path_max = NativeSupport::UNIX_PATH_MAX
+      else
+        unix_path_max = options.fetch('UNIX_PATH_MAX', 100).to_i
+      end
+      if options['socket_dir']
+        socket_dir = options['socket_dir']
+        socket_prefix = "preloader"
+      else
+        socket_dir = Dir.tmpdir
+        socket_prefix = "PsgPreloader"
+      end
+
+      socket_filename = nil
+      server = nil
+      Utils.retry_at_most(128, Errno::EADDRINUSE) do
+        socket_filename = "#{socket_dir}/#{socket_prefix}.#{rand(0xFFFFFFFF).to_s(36)}"
+        socket_filename = socket_filename.slice(0, unix_path_max - 10)
+        server = UNIXServer.new(socket_filename)
+      end
+      server.close_on_exec!
+      File.chmod(0600, socket_filename)
+
+      [server, socket_filename]
+    end
+
+    def self.duplicate_std_channels
+      work_dir = ENV['PASSENGER_SPAWN_WORK_DIR']
+
+      if system('mkfifo', "#{work_dir}/response/stdin")
+        STDIN.reopen("#{work_dir}/response/stdin", 'r')
+      end
+
+      if system('mkfifo', "#{work_dir}/response/stdout_and_err")
+        STDOUT.reopen("#{work_dir}/response/stdout_and_err", 'w')
+        STDERR.reopen(STDOUT)
+        STDOUT.sync = STDERR.sync = true
+      end
+    end
+
     def self.negotiate_spawn_command
       begin
-        while (line = STDIN.readline) != "\n"
-          name, value = line.strip.split(/: */, 2)
-          options[name] = value
+        work_dir = ENV['PASSENGER_SPAWN_WORK_DIR']
+        @@options = File.open("#{work_dir}/args.json", 'rb') do |f|
+          Utils::JSON.parse(f.read)
         end
-        @@options = LoaderSharedHelpers.sanitize_spawn_options(@@options)
+
+        duplicate_std_channels
 
         LoaderSharedHelpers.before_handling_requests(true, options)
         handler = RequestHandler.new(STDIN, options.merge("app" => app))
+
+        LoaderSharedHelpers.dump_all_information(options)
+        LoaderSharedHelpers.advertise_sockets(options, handler)
+        LoaderSharedHelpers.advertise_readiness(options)
       rescue Exception => e
-        LoaderSharedHelpers.report_exception(options, e)
+        LoaderSharedHelpers.record_and_print_exception(e)
         LoaderSharedHelpers.about_to_abort(options, e)
-        exit exit_code_for_exception(e)
+        exit LoaderSharedHelpers.exit_code_for_exception(e)
       end
 
-      LoaderSharedHelpers.advertise_sockets(options, handler)
-      LoaderSharedHelpers.advertise_readiness(options)
       handler
     end
 
@@ -119,14 +165,31 @@ module PhusionPassenger
 
 
     step_info = init_passenger
-    @@options = LoaderSharedHelpers.init(step_info)
+    @@options = PreloaderSharedHelpers.init(self, step_info)
     LoaderSharedHelpers.record_journey_step_performed(step_info)
 
     LoaderSharedHelpers.run_block_and_record_step_progress('SUBPROCESS_APP_LOAD_OR_EXEC') do
       preload_app
     end
 
-    if PreloaderSharedHelpers.run_main_loop(options) == :forked
+    server = nil
+    LoaderSharedHelpers.run_block_and_record_step_progress('SUBPROCESS_LISTEN') do
+      begin
+        server = create_server(options)
+        PreloaderSharedHelpers.advertise_sockets(options, server)
+        LoaderSharedHelpers.dump_all_information(options)
+        LoaderSharedHelpers.advertise_readiness(options)
+      rescue Exception => e
+        LoaderSharedHelpers.record_and_print_exception(e)
+        LoaderSharedHelpers.about_to_abort(options, e)
+        exit LoaderSharedHelpers.exit_code_for_exception(e)
+      end
+    end
+
+    subprocess_work_dir = PreloaderSharedHelpers.run_main_loop(server, options)
+    if subprocess_work_dir
+      # Inside forked subprocess
+      ENV['PASSENGER_SPAWN_WORK_DIR'] = subprocess_work_dir
       handler = negotiate_spawn_command
       handler.main_loop
       handler.cleanup

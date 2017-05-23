@@ -36,6 +36,7 @@
 #include <vector>
 #include <stdexcept>
 #include <cstddef>
+#include <cstdlib>
 #include <cerrno>
 
 #include <sys/types.h>
@@ -62,6 +63,10 @@ using namespace std;
 using namespace oxt;
 
 
+/**
+ * For an introduction see README.md, section
+ * "The handshake and the HandshakePerform class".
+ */
 class HandshakePerform {
 private:
 	enum FinishState {
@@ -635,7 +640,8 @@ private:
 			SpawnException e(INTERNAL_ERROR, session.journey, config);
 			e.setStdoutAndErrData(getStdoutErrData());
 			loadAnnotationsFromEnvDumpDir(e);
-
+P_WARN("error!!! " << session.workDir->getPath());
+sleep(20);
 			if (config->wrapperSuppliedByThirdParty) {
 				e.setSummary("Error spawning the web application:"
 					" a third-party application wrapper did not"
@@ -1213,7 +1219,7 @@ private:
 
 		if (fileExists(stepDir + "/duration")) {
 			value = readAll(stepDir + "/duration");
-			unsigned long long usecDuration = stringToULL(value) * 1000000;
+			unsigned long long usecDuration = atof(value.c_str()) * 1000000;
 			session.journey.setStepExecutionDuration(step, usecDuration);
 		}
 	}

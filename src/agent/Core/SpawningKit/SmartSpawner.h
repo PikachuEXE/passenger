@@ -72,7 +72,7 @@ using namespace oxt;
 
 class SmartSpawner: public Spawner {
 private:
-	const vector<string> preloaderCommand;
+	const string preloaderCommandString;
 	StringKeyTable<string> preloaderAnnotations;
 	AppPoolOptions options;
 
@@ -147,10 +147,32 @@ private:
 		return result;
 	}
 
+	static string escapeShell(const StaticString &value) {
+		// TODO
+		return value;
+	}
+
+	static string createCommandString(const vector<string> &command) {
+		string result;
+		vector<string>::const_iterator it;
+		vector<string>::const_iterator begin = command.begin();
+		vector<string>::const_iterator end = command.end();
+
+		for (it = begin; it != end; it++) {
+			if (it != begin) {
+				result.append(1, ' ');
+			}
+			result.append(escapeShell(*it));
+		}
+
+		return result;
+	}
+
 	void setConfigFromAppPoolOptions(Config *config, Json::Value &extraArgs,
 		const AppPoolOptions &options)
 	{
 		Spawner::setConfigFromAppPoolOptions(config, extraArgs, options);
+		config->startCommand = preloaderCommandString;
 		config->spawnMethod = P_STATIC_STRING("smart");
 	}
 
@@ -652,6 +674,7 @@ private:
 		BackgroundIOCapturerPtr stdoutAndErrCapturer;
 
 		if (fileExists(session.responseDir + "/stdin")) {
+			UPDATE_TRACE_POINT();
 			spawnedStdin = openFifoWithTimeout(
 				session.responseDir + "/stdin",
 				session.timeoutUsec);
@@ -661,6 +684,7 @@ private:
 		}
 
 		if (fileExists(session.responseDir + "/stdout_and_err")) {
+			UPDATE_TRACE_POINT();
 			spawnedStdoutAndErr = openFifoWithTimeout(
 				session.responseDir + "/stdout_and_err",
 				session.timeoutUsec);
@@ -672,11 +696,13 @@ private:
 			stdoutAndErrCapturer->start();
 		}
 
+		UPDATE_TRACE_POINT();
 		// How do we know the preloader actually forked a process
 		// instead of reporting the PID of a random other existing process?
 		// For security reasons we perform a UID check.
 		uid_t spawnedUid = getProcessUid(session, spawnedPid, stdoutAndErrCapturer);
 		if (spawnedUid != session.uid) {
+			UPDATE_TRACE_POINT();
 			session.journey.setStepErrored(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
 
 			SpawnException e(INTERNAL_ERROR, session.journey, session.config);
@@ -702,7 +728,10 @@ private:
 			throw e.finalize();
 		}
 
-		stdoutAndErrCapturer->stop();
+		UPDATE_TRACE_POINT();
+		if (stdoutAndErrCapturer != NULL) {
+			stdoutAndErrCapturer->stop();
+		}
 		guard.clear();
 		return ForkResult(spawnedPid, spawnedStdin, spawnedStdoutAndErr);
 	}
@@ -987,10 +1016,10 @@ private:
 
 public:
 	SmartSpawner(Context *context,
-		const vector<string> &_preloaderCommand,
+		const vector<string> &preloaderCommand,
 		const AppPoolOptions &_options)
 		: Spawner(context),
-		  preloaderCommand(_preloaderCommand)
+		  preloaderCommandString(createCommandString(preloaderCommand))
 	{
 		if (preloaderCommand.size() < 2) {
 			throw ArgumentException("preloaderCommand must have at least 2 elements");
@@ -1044,11 +1073,17 @@ public:
 		session.journey.setStepInProgress(SPAWNING_KIT_PREPARATION);
 
 		try {
+			UPDATE_TRACE_POINT();
 			HandshakePrepare(session, extraArgs).execute();
 
+			UPDATE_TRACE_POINT();
 			ForkResult forkResult = invokeForkCommand(session);
+
+			UPDATE_TRACE_POINT();
 			ScopeGuard guard(boost::bind(nonInterruptableKillAndWaitpid, forkResult.pid));
 			P_DEBUG("Process forked for appRoot=" << options.appRoot << ": PID " << forkResult.pid);
+
+			UPDATE_TRACE_POINT();
 			HandshakePerform(session, forkResult.pid, forkResult.stdinFd,
 				forkResult.stdoutAndErrFd).execute();
 			guard.clear();

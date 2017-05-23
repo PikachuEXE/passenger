@@ -8,21 +8,50 @@ Here is how SpawningKit is used. The caller supplies various parameters such as 
 
 Reliability and visibility are core features in SpawningKit. When SpawningKit returns, you know for sure whether the process started correctly or not. If the application did not start correctly, then the resulting exception describes the failure in a detailed enough manner that allows users to pinpoint the source of the problem. SpawningKit also enforces timeouts everywhere so that stuck processes are handled as well.
 
+**Table of contents**:
+
+ * Important concepts and features
+   - Generic vs SpawningKit-enabled applications
+   - Wrappers
+   - Preloaders
+   - The start command
+   - Summary with examples
+ * Overview of the spawning journey
+   - When spawning a process without a preloader
+   - When starting a preloader
+   - When spawning a process through a preloader
+   - The Journey class
+   - The preparation and the HandshakePrepare class
+   - The handshake and the HandshakePerform class
+   - The SpawnEnvSetupper
+ * The work directory
+   - Structure
+ * Application response properties
+ * The preloader protocol
+ * Subprocess journey logging
+ * Error reporting
+   - Information sources
+   - How an error report is presented
+   - How supplied information affects error report generation
+ * Mechanism for waiting until the application is up
+
+---
+
 ## Important concepts and features
 
 ### Generic vs SpawningKit-enabled applications
 
 SpawningKit can be used to spawn any web application, both those with and without explicit SpawningKit support.
 
-When SpawningKit is used to spawn a generic application (without explicit SpawningKit support), the only requirement is that the application can be instructed to start and to listen on a specific TCP port on localhost. The user needs to specify a command string that tells SpawningKit how that is to be done. SpawningKit then looks for a free port that the application may use and executes the application using the supplied command string, telling it to listen on that specific port. SpawningKit waits until the application is up by pinging the port. If the application fails (e.g. by terminating early or by not responding to pings in time) then SpawningKit will abort, reporting the application's stdout and stderr output.
+When SpawningKit is used to spawn a generic application (without explicit SpawningKit support), the only requirement is that the application can be instructed to start and to listen on a specific TCP port on localhost. The user needs to specify a command string that tells SpawningKit how that is to be done. SpawningKit then looks for a free port that the application may use and executes the application using the supplied command string, telling it to listen on that specific port. (This approach is inspired by Heroku's Procfile system.) SpawningKit waits until the application is up by pinging the port. If the application fails (e.g. by terminating early or by not responding to pings in time) then SpawningKit will abort, reporting the application's stdout and stderr output.
 
-Applications can also be modified with explicit SpawningKit support. Such applications can improve performance by telling SpawningKit that it wishes to listen on a Unix domain socket instead of a TCP socket; and they can provide more feedback about any spawning failures, such as with HTML-formatted error messages or by providing more information about where internally in the application the failure occurred.
+Applications can also be modified with explicit SpawningKit support. Such applications can improve performance by telling SpawningKit that it wishes to listen on a Unix domain socket instead of a TCP socket; and they can provide more feedback about any spawning failures, such as with HTML-formatted error messages or by providing more information about where internally in the application or web framework the failure occurred.
 
 ### Wrappers
 
 In general, it is better if an application has explicit SpawningKit support, because then it is able to provide a nicer experience and better performance. But having to modify the application's code is a major hurdle.
 
-Luckily, it is not always necessary to modify the application. Wrappers are small programs that aid in loading applications written in specific languages, in particular interpreted languages because they allow modifying application behavior without code modifications. When a wrapper is used, SpawningKit executes the wrapper, not the actual application. The wrapper loads the application and modifies its behavior in such a way that SpawningKit support is added (e.g. ability to report HTML-formatted errors), without requiring modifications to the application code.
+Luckily, it is not always necessary to modify the application. Wrappers are small programs that aid in loading applications written in specific languages -- in particular interpreted languages because they allow modifying application behavior without requiring code modifications. When a wrapper is used, SpawningKit executes the wrapper, not the actual application. The wrapper loads the application and modifies its behavior in such a way that SpawningKit support is added (e.g. ability to report HTML-formatted errors), without requiring modifications to the application code.
 
 Wrappers are only applicable to apps without explicit SpawningKit support.
 
@@ -34,7 +63,7 @@ For example, Ruby applications are typically spawned through the Passenger-suppl
 
 Applications written in certain languages are able to save memory and to improve application startup time by using a technique called pre-forking. This works by starting an application process, and instead of using that process to handle requests, we use that process to fork (but not `exec()`) additional child processes that in turn are actually used for processing requests.
 
-In SpawningKit terminology, we call the former a "preloader". Processes that actually used to handle requests (and these processes may either be forked from a preloader or be spawned directly without a preloader) usually do not have a specific name. But for the sake of clarity, let's call the latter, within the context of this document only, "worker processes".
+In SpawningKit terminology, we call the former a "preloader". Processes that actually handle requests (and these processes may either be forked from a preloader or be spawned directly without a preloader) usually do not have a specific name. But for the sake of clarity, let's call the latter -- within the context of this document only -- "worker processes".
 
                                              Requests
                                                 |
@@ -52,15 +81,15 @@ For example, in Ruby applications a significant amount of memory is taken up by 
 
 SpawningKit provides facilities to use this preforking technique. Obviously, this technique can only be used if the target programming language actually supports forking. This is the case with e.g. C, Ruby (using MRI) and Python (using CPython), but not with e.g. Node.js, Ruby (using JRuby), Go and anything running on the JVM.
 
-Using this technique requires either application modification, or the existance of a wrapper that supports this technique.
+Using the preforking technique through SpawningKit requires either application code modifications, or the existance of a wrapper that supports this technique.
 
 ### The start command
 
-Regardless of whether SpawningKit is used to spawn an application with or without explicit SpawningKit support, and regardless of whether a wrapper is used and whether the application/wrapper can function as a preloader, SpawningKit asks the caller to supply a "start command" that tells it how to execute the wrapper or the application. SpawningKit then uses the handshaking procedure (see: The spawning journey) to to communicate with the wrapper/application whether it should start in preloader mode or not.
+Regardless of whether SpawningKit is used to spawn an application with or without explicit SpawningKit support, and regardless of whether a wrapper is used and whether the application/wrapper can function as a preloader, SpawningKit asks the caller to supply a "start command" that tells it how to execute the wrapper or the application. SpawningKit then uses the handshaking procedure (see: "Overview of the spawning journey") to to communicate with the wrapper/application whether it should start in preloader mode or not.
 
 ### Summary with examples
 
-To help you better understand the concepts, the following table displays an example of how all the concepts map to potentially supportable languages.
+To help you better understand the concepts, the following table displays an example of some of the above concepts map to hypothetically supportable languages.
 
 ~~~
 | Generic apps (no   | SpawningKit-enabled,   | SpawningKit-enabled,  |
@@ -155,6 +184,15 @@ The journey looks like this when using a preloader to spawn a process:
 
 The Journey class represents a journey. It records all the steps taken so far, which steps haven't been taken yet, at which step we failed, and how long each step took.
 
+A journey consists of a few parallel actors, with each actor having multiple steps and the ability to invoke another actor. Each step can be in one of three states:
+
+ * Step has not started yet. Will be visualized with an empty placeholder.
+ * Step is currently in progress. Will be visualized with a spinner.
+ * Step has already been performed successfully. Will be visualized with a green tick.
+ * Step has failed. Will be visualized with a red mark.
+
+Steps that have performed successfully or failed also have an associated duration time.
+
 ### The preparation and the HandshakePrepare class
 
 Inside the process running SpawningKit, before forking a subprocess (regardless of whether that is going to be a preloader or a worker), various preparation needs to be done. This preparation work is implemented in Handshake/Prepare.h, in the HandshakePrepare class.
@@ -163,8 +201,8 @@ Here is a list of the work involved in preparation:
 
  * Creating a temporary directory for the purpose of performing a handshake with the subprocess. This directory is called a "work directory". Learn more in sections "The handshake and the HandshakePerform class" and "The work directory". **Note**: the "work directory" in this context refers to this directory, not to the Unix concept of current working directory (`getpwd()`).
  * If the application is not SpawningKit-enabled, or if the caller explicitly instructed so, HandshakePrepare finds a free port for the worker process to listen on. This port number will be passed to the worker process.
- * Dumping, into the work directory, important information that the subprocess should know of. For example: whether it's going to be started in development or production mode, the process title to assume. This information is called the _spawn arguments_.
- * Calculating which exact arguments  need to be passed to the `exec()` call. Because it's unsafe to do this after forking.
+ * Dumping, into the work directory, important information that the subprocess should know of. For example: whether it's going to be started in development or production mode, the process title to assume, etc. This information is called the _spawn arguments_.
+ * Calculating which exact arguments need to be passed to the `exec()` call. Because it's unsafe to do this after forking.
 
 ### The handshake and the HandshakePerform class
 
@@ -190,16 +228,19 @@ The SpawnEnvSetupper is implemented in SpawnEnvSetupperMain.cpp.
 
 ## The work directory
 
-The work directory is a temporary directory created at the very beginning of the spawning procedure, during the SpawningKit preparation step. Note that this "work directory" is distinct from the Unix concept of current working directory (`getpwd()`).
+The work directory is a temporary directory created at the very beginning of the spawning journey, during the SpawningKit preparation step. Note that this "work directory" is distinct from the Unix concept of current working directory (`getpwd()`).
 
 The work directory's purpose is to:
 
  1. ...store information about the spawning procedure that the subprocess should know (the _spawn arguments_).
  2. ...receive information from the subprocess about how spawning went (the _response_). For example the subprocess can use it to signal.
+ 3. ...receive information about the subprocess's environment, so that this information can be displayed to the user for debugging purposes in case something goes wrong.
 
-The work directory doesn't *have* to be used by the subprocess. The handshake procedure works fine even if the subprocess does not do anything with it.
+Here, "subprocess" does not only refer to the worker process, but also to the SpawnEnvSetupper, the wrapper (if applicable) and even the shell. All of these can (not not necessarily *have to*) make use of the work directory. For example, the SpawnEnvSetupper dumps environment information into the work directory. Some wrappers may also dump environment information.
 
-The workdirectory's location is communicated to subprocesses through the `PASSENGER_SPAWN_WORK_DIR` environment variable.
+The work directory's location is communicated to subprocesses through the `PASSENGER_SPAWN_WORK_DIR` environment variable.
+
+### Structure
 
 The work directory has the following structure. Entries that are created during the SpawningKit preparation step are marked with "[P]". All other entries may be created by the subprocess.
 
@@ -284,16 +325,16 @@ There are two entries representing the spawn arguments:
 The `response/` directory represents the response:
 
  * `finish` is a FIFO file. If a wrapper is used, or if the application has explicit support for SpawningKit, then either of them can write to this FIFO file to indicate that it has done spawning. See "Mechanism for waiting until the application is up" for more information.
- * If the application has explicit support for SpawningKit, then it may create a `properties.json` in order to communicate back to SpawningKit information about the spawned application process. For example, if the application process started listening on a random port, then this file can be used to tell SpawningKit which port the process is listening on. See "Application response properties" for more information.
+ * If a wrapper is used, or if the application has explicit support for SpawningKit, then one of them may create a `properties.json` in order to communicate back to SpawningKit information about the spawned worker process. For example, if the application process started listening on a random port, then this file can be used to tell SpawningKit which port the process is listening on. See "Application response properties" for more information.
  * `stdin` and `stdout_and_err` are FIFO files. They are only created (by the preloader) when using a preloader to spawn a new worker process. These FIFOs refer to the spawned worker process's stdin, stdout and stderr.
- * If the subprocess fails, then it can communicate back specific error messages through the `error/` directory. See "Error reporting" for more information.
+ * If the subprocess fails, then it can communicate back specific error messages through the `error/` directory. See "Error reporting" (especially "Information sources") for more information.
  * The subprocess must regularly update the contents of the `steps/` directory to allow SpawningKit to know which step in the journey the subprocess is executing, and what the state and duration of each step is. See "Subprocess journey logging" for more information.
 
-The subprocess should dump information about its environment into the `envdump/` directory. Information includes environment variables (`envvars`), ulimits (`ulimits`), UID/GID (`user_info`), but also anything else that the subprocess deems relevant (`annotations/`). If spawning fails, then the information reported in this directory will be included in the error report (see "Error reporting").
+The subprocess should dump information about its environment into the `envdump/` directory. Information includes environment variables (`envvars`), ulimits (`ulimits`), UID/GID (`user_info`), and anything else that the subprocess deems relevant (`annotations/`). If spawning fails, then the information reported in this directory will be included in the error report (see "Error reporting").
 
 ## Application response properties
 
-If the application has explicit support for SpawningKit, then it may create a `properties.json` inside the `response/` subdirectory of the work directory, in order to communicate back to SpawningKit information about the spawned application process. For example, if the application process started listening on a random port, then this file can be used to tell SpawningKit which port the process is listening on.
+If a wrapper is used or if the application has explicit support for SpawningKit, then either of them may create a `properties.json` inside the `response/` subdirectory of the work directory, in order to communicate back to SpawningKit information about the spawned application process. For example, if the application process started listening on a random port, then this file can be used to tell SpawningKit which port the process is listening on.
 
 `properties.json` may only contain the following keys:
 
@@ -341,7 +382,14 @@ The worker process's stdin, stdout and stderr are stored in FIFO files inside th
 
 ## Subprocess journey logging
 
-TODO
+It is the Passenger Core (running SpawningKit) that initiates a spawning journey and that reports errors to users. Some steps in the journey are performed by actors that are not the Passenger Core (e.g. the preloader and the subprocess). How do these actors communicate to the SpawningKit code running inside the Passenger Core about the state of *their* part of the journey?
+
+This is done through the `steps/` subdirectory in the work directory. Subprocesses write to files in `steps/` regularly. Before SpawningKit's code returns, it loads information from `steps`/ and loads these into the journey object.
+
+Each subdirectory in `steps/` represents a step in the part of the journey that a subprocess is responsible for. The files inside such a subdirectory communicate the state of that step:
+
+ * `state` must contain one of `STEP_NOT_STARTED`, `STEP_IN_PROGRESS`, `STEP_PERFORMED` or `STEP_ERRORED`.
+ * If `state` is either `STEP_PERFORMED` or `STEP_ERRORED`, then `duration` must contain a number representing the number of seconds that this step took. This number may be a floating point number.
 
 ## Error reporting
 
@@ -356,6 +404,12 @@ A report contains the following information:
  * Various **auxiliary details** which are not directly related to the error, but may be useful or necessary for the purpose of debugging the problem: stdout and stderr output so far; ulimits; environment variables; UID, GID of the process in which the error occurred; system metrics such as CPU and RAM; etcetera.
  * A description of the **journey**: which steps inside the journey have been performed, are in progress, or have failed; and how long each step took.
 
+### Information sources
+
+SpawningKit generates an error report (a SpawnException object) by gathering information from multiple sources. One source is SpawningKit itself: if something goes wrong within the preparation step for example, then SpawningKit knows that the error originated from there, and so it will only use internal information to generate an error report.
+
+The other source is the subprocess. If something goes wrong during the handshake step, then true source of the problem can either be in SpawningKit itself (e.g. it ran out of file descriptors), or in the subprocess (e.g. the subprocess encountered a filesystem permission error). Subprocesses can communicate to SpawningKit about errors that they have encountered by dumping information into the `response/error/` subdirectory of the work directory. SpawningKit will use this information in generating an error report.
+
 ### How an error report is presented
 
 The error report is presented in two ways:
@@ -369,7 +423,7 @@ Everything else is meant to be displayed in an HTML page. The HTML page explicit
 
 The advanced problem details are only displayed in the HTML page if one does not explicitly supply a problem description. See "Generating an error report" for more information.
 
-### Generating an error report
+### How supplied information affects error report generation
 
 Only a _category_ and a _journey description_ are required for generating an error report. The SpawnException class is capable of automatically generating an appropriate (albeit generic) summary, problem description and solution description based on the category and which step in the journey failed.
 
@@ -379,4 +433,8 @@ Inside the SpawningKit codebase, an error report is generated by creating a Spaw
 
 ## Mechanism for waiting until the application is up
 
-TODO
+SpawningKit utilizes two mechanisms to wait until the application is up. It invokes both mechanisms at the same time and waits until at least one succeeds.
+
+The first mechanism the `response/finish` file in the work directory. A wrapper or a SpawningKit-enabled application can write to that file to tell SpawningKit that it is done, either successfully (by writing `1`) or with an error (by writing `0`).
+
+The second mechanism is only activated when the caller has told SpawningKit that the application is generic, or when the caller has told SpawningKit to find a free port for the application. In this case, SpawningKit will wait until the port that it has found can be connected to.

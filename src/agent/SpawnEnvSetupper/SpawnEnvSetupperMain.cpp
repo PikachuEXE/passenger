@@ -25,12 +25,7 @@
  */
 
 /*
- * Sets given environment variables, dumps the entire environment to
- * a given file (for diagnostics purposes), then execs the given command.
- *
- * This is a separate executable because it does quite
- * some non-async-signal-safe stuff that we can't do after
- * fork()ing from the Spawner and before exec()ing.
+ * For an introduction see SpawningKit's README.md, section "The SpawnEnvSetupper".
  */
 
 #include <oxt/initialize.hpp>
@@ -159,7 +154,7 @@ recordJourneyStepComplete(const Context &context, SpawningKit::JourneyStep step,
 	}
 	try {
 		createFile((path + "/duration").c_str(),
-			toString((now - startTime) / 1000000));
+			toString((now - startTime) / 1000000.0));
 	} catch (const FileSystemException &e) {
 		fprintf(stderr, "Warning: %s\n", e.what());
 	}
@@ -705,7 +700,9 @@ static bool
 shouldLoadShellEnvvars(const Json::Value &args, const string &shell) {
 	if (args["load_shell_envvars"].asBool()) {
 		string shellName = extractBaseName(shell);
-		return shellName == "bash" || shellName == "zsh" || shellName == "ksh";
+		bool result = shellName == "bash" || shellName == "zsh" || shellName == "ksh";
+		P_DEBUG("shellName = '" << shellName << "' in [bash,zsh,ksh]: " << (result ? "true" : "false"));
+		return result;
 	} else {
 		return false;
 	}
@@ -740,6 +737,9 @@ execNextCommand(const Context &context, const string &shell)
 		if (shouldLoadShellEnvvars(context.args, shell)) {
 			nextJourneyStep = SpawningKit::SUBPROCESS_OS_SHELL;
 			commandArgs.push_back(shell.c_str());
+			if (getLogLevel() >= LVL_DEBUG3) {
+				commandArgs.push_back("-x");
+			}
 			commandArgs.push_back("-lc");
 			commandArgs.push_back("exec \"$@\"");
 			commandArgs.push_back("SpawnEnvSetupperShell");

@@ -71,6 +71,10 @@ using namespace std;
 using namespace oxt;
 
 
+/**
+ * For an introduction see README.md, section
+ * "The preparation and the HandshakePrepare class".
+ */
 class HandshakePrepare {
 private:
 	HandshakeSession &session;

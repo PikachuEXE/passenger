@@ -45,6 +45,11 @@ namespace SpawningKit {
 using namespace std;
 
 
+/**
+ * As explained in README.md, there are three possible journeys,
+ * although each journey can have small variations (based on whether
+ * a wrapper is used or not).
+ */
 enum JourneyType {
 	SPAWN_DIRECTLY,
 	START_PRELOADER,
@@ -140,12 +145,18 @@ struct JourneyStepInfo {
 	Json::Value inspectAsJson(JourneyStep step) const {
 		Json::Value doc;
 		doc["state"] = journeyStepStateToString(state).toString();
-		doc["usec_duration"] = (Json::UInt64) usecDuration();
+		doc["duration"] = usecDuration() / 1000000.0;
 		return doc;
 	}
 };
 
 
+/**
+ * For an introduction see README.md, sections:
+ *
+ *  - "The Journey class"
+ *  - "Subprocess journey logging"
+ */
 class Journey {
 public:
 	typedef map<JourneyStep, JourneyStepInfo> Map;

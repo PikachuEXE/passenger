@@ -66,6 +66,9 @@ inline ErrorCategory inferErrorCategoryFromAnotherException(const std::exception
 	JourneyStep failedJourneyStep);
 
 
+/**
+ * For an introduction see README.md, section "Error reporting".
+ */
 class SpawnException: public oxt::tracable_exception {
 private:
 	struct EnvDump {

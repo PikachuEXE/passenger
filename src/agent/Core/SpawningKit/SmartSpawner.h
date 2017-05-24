@@ -148,7 +148,43 @@ private:
 	}
 
 	static string escapeShell(const StaticString &value) {
-		// TODO
+		if (value.empty()) {
+			return "''";
+		}
+
+		const char *pos = value.data();
+		const char *end = value.data() + value.size();
+		string result;
+
+		result.reserve(value.size() * 1.5);
+
+		while (pos < end) {
+			char ch = *pos;
+			if (ch == '\n') {
+				// It is not possible to escape a newline with a backslash.
+				// This is because a backslash + newline combination
+				// is treated to mean a line continuation
+				result.append("'\n'", 3);
+			} else {
+				bool allowed =
+					(ch >= 'A' && ch <= 'Z')
+					|| (ch >= 'a' && ch <= 'z')
+					|| (ch >= '0' && ch <= '9')
+					|| ch == '_'
+					|| ch == '-'
+					|| ch == '.'
+					|| ch == ','
+					|| ch == ':'
+					|| ch == '/'
+					|| ch == '@';
+				if (!allowed) {
+					result.append(1, '\\');
+				}
+				result.append(1, ch);
+			}
+			pos++;
+		}
+
 		return value;
 	}
 
@@ -673,21 +709,23 @@ private:
 		FileDescriptor spawnedStdin, spawnedStdoutAndErr;
 		BackgroundIOCapturerPtr stdoutAndErrCapturer;
 
-		if (fileExists(session.responseDir + "/stdin")) {
+		if (getFileType(session.responseDir + "/stdin") == FT_OTHER) {
 			UPDATE_TRACE_POINT();
 			spawnedStdin = openFifoWithTimeout(
 				session.responseDir + "/stdin",
-				session.timeoutUsec);
+				session.timeoutUsec,
+				O_WRONLY | O_APPEND);
 			P_LOG_FILE_DESCRIPTOR_PURPOSE(spawnedStdin,
 				"App " << spawnedPid << " (" << options.appRoot
 				<< ") stdin");
 		}
 
-		if (fileExists(session.responseDir + "/stdout_and_err")) {
+		if (getFileType(session.responseDir + "/stdout_and_err") == FT_OTHER) {
 			UPDATE_TRACE_POINT();
 			spawnedStdoutAndErr = openFifoWithTimeout(
 				session.responseDir + "/stdout_and_err",
-				session.timeoutUsec);
+				session.timeoutUsec,
+				O_RDONLY);
 			P_LOG_FILE_DESCRIPTOR_PURPOSE(spawnedStdoutAndErr,
 				"App " << spawnedPid << " (" << options.appRoot
 				<< ") stdoutAndErr");
@@ -910,13 +948,13 @@ private:
 	}
 
 	static FileDescriptor openFifoWithTimeout(const string &path,
-		unsigned long long &timeout)
+		unsigned long long &timeout, int options)
 	{
 		TRACE_POINT();
 		FileDescriptor fd;
 		int errcode;
 		oxt::thread thr(
-			boost::bind(openFifoWithTimeoutThreadMain, path, &fd, &errcode),
+			boost::bind(openFifoWithTimeoutThreadMain, path, options, &fd, &errcode),
 			"FIFO opener: " + path, 1024 * 128);
 
 		MonotonicTimeUsec startTime = SystemTime::getMonotonicUsec();
@@ -948,10 +986,10 @@ private:
 	}
 
 	static void openFifoWithTimeoutThreadMain(const string path,
-		FileDescriptor *fd, int *errcode)
+		int options, FileDescriptor *fd, int *errcode)
 	{
 		TRACE_POINT();
-		fd->assign(syscalls::open(path.c_str(), O_RDONLY), __FILE__, __LINE__);
+		fd->assign(syscalls::open(path.c_str(), options), __FILE__, __LINE__);
 		*errcode = errno;
 	}
 
@@ -960,7 +998,7 @@ private:
 		boost::this_thread::disable_syscall_interruption dsi;
 		MonotonicTimeUsec now = SystemTime::getMonotonicUsec();
 		assert(now >= startTime);
-		MonotonicTimeUsec diff = startTime - now;
+		MonotonicTimeUsec diff = now - startTime;
 		if (*timeout >= diff) {
 			*timeout -= diff;
 		} else {

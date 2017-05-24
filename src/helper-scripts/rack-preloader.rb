@@ -122,18 +122,11 @@ module PhusionPassenger
       [server, socket_filename]
     end
 
-    def self.duplicate_std_channels
-      work_dir = ENV['PASSENGER_SPAWN_WORK_DIR']
-
-      if system('mkfifo', "#{work_dir}/response/stdin")
-        STDIN.reopen("#{work_dir}/response/stdin", 'r')
-      end
-
-      if system('mkfifo', "#{work_dir}/response/stdout_and_err")
-        STDOUT.reopen("#{work_dir}/response/stdout_and_err", 'w')
-        STDERR.reopen(STDOUT)
-        STDOUT.sync = STDERR.sync = true
-      end
+    def self.reinitialize_std_channels(work_dir)
+      STDIN.reopen("#{work_dir}/response/stdin", 'r')
+      STDOUT.reopen("#{work_dir}/response/stdout_and_err", 'w')
+      STDERR.reopen(STDOUT)
+      STDOUT.sync = STDERR.sync = true
     end
 
     def self.negotiate_spawn_command
@@ -143,7 +136,7 @@ module PhusionPassenger
           Utils::JSON.parse(f.read)
         end
 
-        duplicate_std_channels
+        reinitialize_std_channels(work_dir)
 
         LoaderSharedHelpers.before_handling_requests(true, options)
         handler = RequestHandler.new(STDIN, options.merge("app" => app))

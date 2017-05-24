@@ -56,6 +56,15 @@ module PhusionPassenger
       options
     end
 
+    def create_std_channel_fifos(work_dir)
+      if !system('mkfifo', "#{work_dir}/response/stdin")
+        raise "Error creating #{work_dir}/response/stdin"
+      end
+      if !system('mkfifo', "#{work_dir}/response/stdout_and_err")
+        raise "Error creating #{work_dir}/response/stdout_and_err"
+      end
+    end
+
     def accept_and_process_next_client(server_socket)
       client = server_socket.accept
       client.binmode
@@ -81,6 +90,7 @@ module PhusionPassenger
         pid = fork
         if pid.nil?
           $0 = "#{$0} (forking...)"
+          create_std_channel_fifos(doc['work_dir'])
           client.write(Utils::JSON.generate(
             :result => 'ok',
             :pid => Process.pid

@@ -244,7 +244,7 @@ public:
 		} catch (const SpawnException &) {
 			throw;
 		} catch (const std::exception &originalException) {
-			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION);
+			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION, true);
 			throw SpawnException(originalException, session.journey,
 				&config).finalize();
 		}

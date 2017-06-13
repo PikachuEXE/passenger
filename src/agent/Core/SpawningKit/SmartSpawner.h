@@ -35,7 +35,9 @@
 #include <map>
 #include <stdexcept>
 #include <dirent.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <cstdio>
 #include <cstring>
@@ -210,6 +212,124 @@ private:
 		Spawner::setConfigFromAppPoolOptions(config, extraArgs, options);
 		config->startCommand = preloaderCommandString;
 		config->spawnMethod = P_STATIC_STRING("smart");
+	}
+
+	struct StdChannelsAsyncOpenState {
+		oxt::thread *stdinOpenThread;
+		FileDescriptor stdinFd;
+		int stdinOpenErrno;
+
+		oxt::thread *stdoutAndErrOpenThread;
+		FileDescriptor stdoutAndErrFd;
+		int stdoutAndErrOpenErrno;
+
+		BackgroundIOCapturerPtr stdoutAndErrCapturer;
+
+		StdChannelsAsyncOpenState()
+			: stdinOpenThread(NULL),
+			  stdoutAndErrOpenThread(NULL)
+			{ }
+
+		~StdChannelsAsyncOpenState() {
+			boost::this_thread::disable_interruption di;
+			boost::this_thread::disable_syscall_interruption dsi;
+			if (stdinOpenThread != NULL) {
+				stdinOpenThread->interrupt_and_join();
+				delete stdinOpenThread;
+			}
+			if (stdoutAndErrOpenThread != NULL) {
+				stdoutAndErrOpenThread->interrupt_and_join();
+				delete stdoutAndErrOpenThread;
+			}
+		}
+	};
+
+	typedef boost::shared_ptr<StdChannelsAsyncOpenState> StdChannelsAsyncOpenStatePtr;
+
+	StdChannelsAsyncOpenStatePtr openStdChannelsFifosAsynchronously(
+		HandshakeSession &session)
+	{
+		StdChannelsAsyncOpenStatePtr state = boost::make_shared<StdChannelsAsyncOpenState>();
+		state->stdinOpenThread = new oxt::thread(boost::bind(
+			openStdinChannel, state, session.responseDir),
+			"FIFO opener: " + session.responseDir + "/stdin", 1024 * 128);
+		state->stdoutAndErrOpenThread = new oxt::thread(boost::bind(
+			openStdoutAndErrChannel, state, session.responseDir),
+			"FIFO opener: " + session.responseDir + "/stdout_and_err", 1024 * 128);
+		return state;
+	}
+
+	void waitForStdChannelFifosToBeOpenedByPeer(const StdChannelsAsyncOpenStatePtr &state,
+		HandshakeSession &session, pid_t pid)
+	{
+		TRACE_POINT();
+		MonotonicTimeUsec startTime = SystemTime::getMonotonicUsec();
+		ScopeGuard guard(boost::bind(adjustTimeout, startTime, &session.timeoutUsec));
+
+		try {
+			if (state->stdinOpenThread->try_join_for(
+				boost::chrono::microseconds(session.timeoutUsec)))
+			{
+				delete state->stdinOpenThread;
+				state->stdinOpenThread = NULL;
+				if (state->stdinFd == -1) {
+					throw SystemException("Error opening FIFO "
+						+ session.responseDir + "/stdin",
+						state->stdinOpenErrno);
+				} else {
+					P_LOG_FILE_DESCRIPTOR_PURPOSE(state->stdinFd,
+						"App " << pid << " (" << options.appRoot
+						<< ") stdin");
+				}
+			} else {
+				throw TimeoutException("Timeout opening FIFO "
+					+ session.responseDir + "/stdin");
+			}
+
+			UPDATE_TRACE_POINT();
+			if (state->stdoutAndErrOpenThread->try_join_for(
+				boost::chrono::microseconds(session.timeoutUsec)))
+			{
+				delete state->stdoutAndErrOpenThread;
+				state->stdoutAndErrOpenThread = NULL;
+				if (state->stdoutAndErrFd == -1) {
+					throw SystemException("Error opening FIFO "
+						+ session.responseDir + "/stdout_and_err",
+						state->stdoutAndErrOpenErrno);
+				} else {
+					P_LOG_FILE_DESCRIPTOR_PURPOSE(state->stdoutAndErrFd,
+						"App " << pid << " (" << options.appRoot
+						<< ") stdoutAndErr");
+				}
+			} else {
+				throw TimeoutException("Timeout opening FIFO "
+					+ session.responseDir + "/stdout_and_err");
+			}
+
+			state->stdoutAndErrCapturer = boost::make_shared<BackgroundIOCapturer>(
+				state->stdoutAndErrFd, pid);
+			state->stdoutAndErrCapturer->start();
+		} catch (const boost::system::system_error &e) {
+			throw SystemException(e.what(), e.code().value());
+		}
+	}
+
+	static void openStdinChannel(StdChannelsAsyncOpenStatePtr state,
+		const string &responseDir)
+	{
+		int fd = syscalls::open((responseDir + "/stdin").c_str(), O_WRONLY | O_APPEND);
+		int e = errno;
+		state->stdinFd.assign(fd, __FILE__, __LINE__);
+		state->stdinOpenErrno = e;
+	}
+
+	static void openStdoutAndErrChannel(StdChannelsAsyncOpenStatePtr state,
+		const string &responseDir)
+	{
+		int fd = syscalls::open((responseDir + "/stdout_and_err").c_str(), O_WRONLY);
+		int e = errno;
+		state->stdoutAndErrFd.assign(fd, __FILE__, __LINE__);
+		state->stdoutAndErrOpenErrno = e;
 	}
 
 	bool preloaderStarted() const {
@@ -438,7 +558,9 @@ private:
 	ForkResult invokeForkCommand(HandshakeSession &session) {
 		TRACE_POINT();
 		try {
-			return internalInvokeForkCommand(session);
+			StdChannelsAsyncOpenStatePtr stdChannelsAsyncOpenState =
+				openStdChannelsFifosAsynchronously(session);
+			return internalInvokeForkCommand(session, stdChannelsAsyncOpenState);
 		} catch (const PreloaderCrashed &crashException1) {
 			P_WARN("An error occurred while spawning an application process: "
 				<< crashException1.getException().what());
@@ -474,7 +596,9 @@ private:
 			startPreloader();
 
 			try {
-				return internalInvokeForkCommand(session);
+				StdChannelsAsyncOpenStatePtr stdChannelsAsyncOpenState =
+					openStdChannelsFifosAsynchronously(session);
+				return internalInvokeForkCommand(session, stdChannelsAsyncOpenState);
 			} catch (const PreloaderCrashed &crashException2) {
 				try {
 					stopPreloader();
@@ -519,7 +643,9 @@ private:
 		}
 	}
 
-	ForkResult internalInvokeForkCommand(HandshakeSession &session) {
+	ForkResult internalInvokeForkCommand(HandshakeSession &session,
+		const StdChannelsAsyncOpenStatePtr &stdChannelsAsyncOpenState)
+	{
 		TRACE_POINT();
 
 		session.journey.setStepInProgress(SPAWNING_KIT_CONNECT_TO_PRELOADER);
@@ -566,7 +692,7 @@ private:
 		session.journey.setStepPerformed(SPAWNING_KIT_PARSE_RESPONSE_FROM_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
 		try {
-			return handleForkCommandResponse(session, doc);
+			return handleForkCommandResponse(session, stdChannelsAsyncOpenState, doc);
 		} catch (...) {
 			session.journey.setStepErrored(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
 			throw;
@@ -689,56 +815,37 @@ private:
 		}
 	}
 
-	ForkResult handleForkCommandResponse(HandshakeSession &session, const Json::Value &doc) {
+	ForkResult handleForkCommandResponse(HandshakeSession &session,
+		const StdChannelsAsyncOpenStatePtr &stdChannelsAsyncOpenState,
+		const Json::Value &doc)
+	{
 		TRACE_POINT();
 		if (doc["result"].asString() == "ok") {
-			return handleForkCommandResponseSuccess(session, doc);
+			return handleForkCommandResponseSuccess(session, stdChannelsAsyncOpenState,
+				doc);
 		} else {
 			P_ASSERT_EQ(doc["result"].asString(), "error");
-			return handleForkCommandResponseError(session ,doc);
+			return handleForkCommandResponseError(session, doc);
 		}
 	}
 
 	ForkResult handleForkCommandResponseSuccess(HandshakeSession &session,
-		const Json::Value &doc)
+		const StdChannelsAsyncOpenStatePtr &stdChannelsAsyncOpenState, const Json::Value &doc)
 	{
 		TRACE_POINT();
 		pid_t spawnedPid = doc["pid"].asInt();
 		ScopeGuard guard(boost::bind(nonInterruptableKillAndWaitpid, spawnedPid));
 
-		FileDescriptor spawnedStdin, spawnedStdoutAndErr;
-		BackgroundIOCapturerPtr stdoutAndErrCapturer;
-
-		if (getFileType(session.responseDir + "/stdin") == FT_OTHER) {
-			UPDATE_TRACE_POINT();
-			spawnedStdin = openFifoWithTimeout(
-				session.responseDir + "/stdin",
-				session.timeoutUsec,
-				O_WRONLY | O_APPEND);
-			P_LOG_FILE_DESCRIPTOR_PURPOSE(spawnedStdin,
-				"App " << spawnedPid << " (" << options.appRoot
-				<< ") stdin");
-		}
-
-		if (getFileType(session.responseDir + "/stdout_and_err") == FT_OTHER) {
-			UPDATE_TRACE_POINT();
-			spawnedStdoutAndErr = openFifoWithTimeout(
-				session.responseDir + "/stdout_and_err",
-				session.timeoutUsec,
-				O_RDONLY);
-			P_LOG_FILE_DESCRIPTOR_PURPOSE(spawnedStdoutAndErr,
-				"App " << spawnedPid << " (" << options.appRoot
-				<< ") stdoutAndErr");
-			stdoutAndErrCapturer = boost::make_shared<BackgroundIOCapturer>(
-				spawnedStdoutAndErr, spawnedPid);
-			stdoutAndErrCapturer->start();
-		}
+		UPDATE_TRACE_POINT();
+		waitForStdChannelFifosToBeOpenedByPeer(stdChannelsAsyncOpenState,
+			session, spawnedPid);
 
 		UPDATE_TRACE_POINT();
 		// How do we know the preloader actually forked a process
 		// instead of reporting the PID of a random other existing process?
 		// For security reasons we perform a UID check.
-		uid_t spawnedUid = getProcessUid(session, spawnedPid, stdoutAndErrCapturer);
+		uid_t spawnedUid = getProcessUid(session, spawnedPid,
+			stdChannelsAsyncOpenState->stdoutAndErrCapturer);
 		if (spawnedUid != session.uid) {
 			UPDATE_TRACE_POINT();
 			session.journey.setStepErrored(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
@@ -748,7 +855,8 @@ private:
 			e.setSummary("The process that the preloader said it spawned, PID "
 				+ toString(spawnedPid) + ", has UID " + toString(spawnedUid)
 				+ ", but the expected UID is " + toString(session.uid));
-			e.setStdoutAndErrData(getBackgroundIOCapturerData(stdoutAndErrCapturer));
+			e.setStdoutAndErrData(getBackgroundIOCapturerData(
+				stdChannelsAsyncOpenState->stdoutAndErrCapturer));
 			e.setProblemDescriptionHTML(
 				"<p>The " PROGRAM_NAME " application server tried"
 				" to start the web application by communicating with a"
@@ -767,11 +875,12 @@ private:
 		}
 
 		UPDATE_TRACE_POINT();
-		if (stdoutAndErrCapturer != NULL) {
-			stdoutAndErrCapturer->stop();
+		if (stdChannelsAsyncOpenState->stdoutAndErrCapturer != NULL) {
+			stdChannelsAsyncOpenState->stdoutAndErrCapturer->stop();
 		}
 		guard.clear();
-		return ForkResult(spawnedPid, spawnedStdin, spawnedStdoutAndErr);
+		return ForkResult(spawnedPid, stdChannelsAsyncOpenState->stdinFd,
+			stdChannelsAsyncOpenState->stdoutAndErrFd);
 	}
 
 	ForkResult handleForkCommandResponseError(HandshakeSession &session,
@@ -797,6 +906,32 @@ private:
 			" consult <a href=\"" SUPPORT_URL "\">the " SHORT_PROGRAM_NAME
 			" support resources</a> for help.</p>");
 		throw e.finalize();
+	}
+
+	void createStdChannelFifos(const HandshakeSession &session) {
+		const string &responseDir = session.responseDir;
+		createFifo(session, responseDir + "/stdin");
+		createFifo(session, responseDir + "/stdout_and_err");
+	}
+
+	void createFifo(const HandshakeSession &session, const string &path) {
+		int ret;
+
+		do {
+			ret = mkfifo(path.c_str(), 0600);
+		} while (ret == -1 && errno == EAGAIN);
+		if (ret == -1) {
+			int e = errno;
+			throw FileSystemException("Cannot create FIFO file " + path,
+				e, path);
+		}
+
+		ret = syscalls::chown(path.c_str(), session.uid, session.gid);
+		if (ret == -1) {
+			int e = errno;
+			throw FileSystemException("Cannot change owner and group on FIFO file " + path,
+				e, path);
+		}
 	}
 
 	string getBackgroundIOCapturerData(const BackgroundIOCapturerPtr &capturer) const {
@@ -947,52 +1082,6 @@ private:
 			"</div>";
 	}
 
-	static FileDescriptor openFifoWithTimeout(const string &path,
-		unsigned long long &timeout, int options)
-	{
-		TRACE_POINT();
-		FileDescriptor fd;
-		int errcode;
-		oxt::thread thr(
-			boost::bind(openFifoWithTimeoutThreadMain, path, options, &fd, &errcode),
-			"FIFO opener: " + path, 1024 * 128);
-
-		MonotonicTimeUsec startTime = SystemTime::getMonotonicUsec();
-		ScopeGuard guard(boost::bind(adjustTimeout, startTime, &timeout));
-
-		try {
-			UPDATE_TRACE_POINT();
-			if (thr.try_join_for(boost::chrono::microseconds(timeout))) {
-				if (fd == -1) {
-					throw SystemException("Cannot open FIFO " + path, errcode);
-				} else {
-					return fd;
-				}
-			} else {
-				boost::this_thread::disable_interruption di;
-				boost::this_thread::disable_syscall_interruption dsi;
-				thr.interrupt_and_join();
-				throw TimeoutException("Timeout opening FIFO " + path);
-			}
-		} catch (const boost::thread_interrupted &) {
-			boost::this_thread::disable_interruption di;
-			boost::this_thread::disable_syscall_interruption dsi;
-			UPDATE_TRACE_POINT();
-			thr.interrupt_and_join();
-			throw;
-		} catch (const boost::system::system_error &e) {
-			throw SystemException(e.what(), e.code().value());
-		}
-	}
-
-	static void openFifoWithTimeoutThreadMain(const string path,
-		int options, FileDescriptor *fd, int *errcode)
-	{
-		TRACE_POINT();
-		fd->assign(syscalls::open(path.c_str(), options), __FILE__, __LINE__);
-		*errcode = errno;
-	}
-
 	static void adjustTimeout(MonotonicTimeUsec startTime, unsigned long long *timeout) {
 		boost::this_thread::disable_interruption di;
 		boost::this_thread::disable_syscall_interruption dsi;
@@ -1112,6 +1201,8 @@ public:
 		try {
 			UPDATE_TRACE_POINT();
 			HandshakePrepare(session, extraArgs).execute();
+			createStdChannelFifos(session);
+			session.journey.setStepPerformed(SPAWNING_KIT_PREPARATION);
 
 			UPDATE_TRACE_POINT();
 			ForkResult forkResult = invokeForkCommand(session);
@@ -1132,7 +1223,7 @@ public:
 			addPreloaderAnnotations(e);
 			throw e;
 		} catch (const std::exception &originalException) {
-			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION);
+			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION, true);
 			SpawnException e(originalException, session.journey,
 				&config);
 			addPreloaderAnnotations(e);

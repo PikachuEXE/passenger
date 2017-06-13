@@ -1197,7 +1197,7 @@ public:
 		UPDATE_TRACE_POINT();
 		HandshakeSession session(*context, config, SPAWN_THROUGH_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PREPARATION);
-
+session.timeoutUsec = 15000;
 		try {
 			UPDATE_TRACE_POINT();
 			HandshakePrepare(session, extraArgs).execute();
@@ -1224,6 +1224,7 @@ public:
 			throw e;
 		} catch (const std::exception &originalException) {
 			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION, true);
+			P_WARN(session.journey.inspectAsJson().toStyledString());
 			SpawnException e(originalException, session.journey,
 				&config);
 			addPreloaderAnnotations(e);

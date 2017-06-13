@@ -1106,7 +1106,6 @@ public:
 		}
 
 		UPDATE_TRACE_POINT();
-		Result result;
 		HandshakeSession session(*context, config, SPAWN_THROUGH_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PREPARATION);
 
@@ -1128,7 +1127,7 @@ public:
 			session.journey.setStepPerformed(SPAWNING_KIT_HANDSHAKE_PERFORM);
 			P_DEBUG("Process spawning done: appRoot=" << options.appRoot <<
 				", pid=" << forkResult.pid);
-			return result;
+			return session.result;
 		} catch (SpawnException &e) {
 			addPreloaderAnnotations(e);
 			throw e;

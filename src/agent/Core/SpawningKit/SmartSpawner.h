@@ -280,6 +280,8 @@ private:
 					P_LOG_FILE_DESCRIPTOR_PURPOSE(state->stdinFd,
 						"App " << pid << " (" << options.appRoot
 						<< ") stdin");
+					adjustTimeout(startTime, &session.timeoutUsec);
+					startTime = SystemTime::getMonotonicUsec();
 				}
 			} else {
 				throw TimeoutException("Timeout opening FIFO "
@@ -326,7 +328,7 @@ private:
 	static void openStdoutAndErrChannel(StdChannelsAsyncOpenStatePtr state,
 		const string &responseDir)
 	{
-		int fd = syscalls::open((responseDir + "/stdout_and_err").c_str(), O_WRONLY);
+		int fd = syscalls::open((responseDir + "/stdout_and_err").c_str(), O_RDONLY);
 		int e = errno;
 		state->stdoutAndErrFd.assign(fd, __FILE__, __LINE__);
 		state->stdoutAndErrOpenErrno = e;
@@ -555,12 +557,13 @@ private:
 		}
 	};
 
-	ForkResult invokeForkCommand(HandshakeSession &session) {
+	ForkResult invokeForkCommand(HandshakeSession &session, JourneyStep &stepToMarkAsErrored) {
 		TRACE_POINT();
 		try {
 			StdChannelsAsyncOpenStatePtr stdChannelsAsyncOpenState =
 				openStdChannelsFifosAsynchronously(session);
-			return internalInvokeForkCommand(session, stdChannelsAsyncOpenState);
+			return internalInvokeForkCommand(session, stdChannelsAsyncOpenState,
+				stepToMarkAsErrored);
 		} catch (const PreloaderCrashed &crashException1) {
 			P_WARN("An error occurred while spawning an application process: "
 				<< crashException1.getException().what());
@@ -598,7 +601,8 @@ private:
 			try {
 				StdChannelsAsyncOpenStatePtr stdChannelsAsyncOpenState =
 					openStdChannelsFifosAsynchronously(session);
-				return internalInvokeForkCommand(session, stdChannelsAsyncOpenState);
+				return internalInvokeForkCommand(session, stdChannelsAsyncOpenState,
+					stepToMarkAsErrored);
 			} catch (const PreloaderCrashed &crashException2) {
 				try {
 					stopPreloader();
@@ -644,11 +648,13 @@ private:
 	}
 
 	ForkResult internalInvokeForkCommand(HandshakeSession &session,
-		const StdChannelsAsyncOpenStatePtr &stdChannelsAsyncOpenState)
+		const StdChannelsAsyncOpenStatePtr &stdChannelsAsyncOpenState,
+		JourneyStep &stepToMarkAsErrored)
 	{
 		TRACE_POINT();
 
 		session.journey.setStepInProgress(SPAWNING_KIT_CONNECT_TO_PRELOADER);
+		stepToMarkAsErrored = SPAWNING_KIT_CONNECT_TO_PRELOADER;
 		FileDescriptor fd;
 		string line;
 		Json::Value doc;
@@ -662,6 +668,7 @@ private:
 
 		session.journey.setStepPerformed(SPAWNING_KIT_CONNECT_TO_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_SEND_COMMAND_TO_PRELOADER);
+		stepToMarkAsErrored = SPAWNING_KIT_SEND_COMMAND_TO_PRELOADER;
 		try {
 			sendForkCommand(session, fd);
 		} catch (const SystemException &e) {
@@ -672,6 +679,7 @@ private:
 
 		session.journey.setStepPerformed(SPAWNING_KIT_SEND_COMMAND_TO_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_READ_RESPONSE_FROM_PRELOADER);
+		stepToMarkAsErrored = SPAWNING_KIT_READ_RESPONSE_FROM_PRELOADER;
 		try {
 			line = readForkCommandResponse(session, fd);
 		} catch (const SystemException &e) {
@@ -682,21 +690,13 @@ private:
 
 		session.journey.setStepPerformed(SPAWNING_KIT_READ_RESPONSE_FROM_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PARSE_RESPONSE_FROM_PRELOADER);
-		try {
-			doc = parseForkCommandResponse(session, line);
-		} catch (...) {
-			session.journey.setStepErrored(SPAWNING_KIT_PARSE_RESPONSE_FROM_PRELOADER);
-			throw;
-		}
+		stepToMarkAsErrored = SPAWNING_KIT_PARSE_RESPONSE_FROM_PRELOADER;
+		doc = parseForkCommandResponse(session, line);
 
 		session.journey.setStepPerformed(SPAWNING_KIT_PARSE_RESPONSE_FROM_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
-		try {
-			return handleForkCommandResponse(session, stdChannelsAsyncOpenState, doc);
-		} catch (...) {
-			session.journey.setStepErrored(SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER);
-			throw;
-		}
+		stepToMarkAsErrored = SPAWNING_KIT_PROCESS_RESPONSE_FROM_PRELOADER;
+		return handleForkCommandResponse(session, stdChannelsAsyncOpenState, doc);
 	}
 
 	void sendForkCommand(HandshakeSession &session, const FileDescriptor &fd) {
@@ -1197,7 +1197,8 @@ public:
 		UPDATE_TRACE_POINT();
 		HandshakeSession session(*context, config, SPAWN_THROUGH_PRELOADER);
 		session.journey.setStepInProgress(SPAWNING_KIT_PREPARATION);
-session.timeoutUsec = 15000;
+		JourneyStep stepToMarkAsErrored = SPAWNING_KIT_PREPARATION;
+
 		try {
 			UPDATE_TRACE_POINT();
 			HandshakePrepare(session, extraArgs).execute();
@@ -1205,7 +1206,7 @@ session.timeoutUsec = 15000;
 			session.journey.setStepPerformed(SPAWNING_KIT_PREPARATION);
 
 			UPDATE_TRACE_POINT();
-			ForkResult forkResult = invokeForkCommand(session);
+			ForkResult forkResult = invokeForkCommand(session, stepToMarkAsErrored);
 
 			UPDATE_TRACE_POINT();
 			ScopeGuard guard(boost::bind(nonInterruptableKillAndWaitpid, forkResult.pid));
@@ -1223,8 +1224,7 @@ session.timeoutUsec = 15000;
 			addPreloaderAnnotations(e);
 			throw e;
 		} catch (const std::exception &originalException) {
-			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION, true);
-			P_WARN(session.journey.inspectAsJson().toStyledString());
+			session.journey.setStepErrored(stepToMarkAsErrored, true);
 			SpawnException e(originalException, session.journey,
 				&config);
 			addPreloaderAnnotations(e);

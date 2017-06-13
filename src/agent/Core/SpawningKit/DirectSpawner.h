@@ -126,11 +126,10 @@ private:
 	}
 
 	Result internalSpawn(const AppPoolOptions &options, Config &config,
-		HandshakeSession &session, const Json::Value &extraArgs)
+		HandshakeSession &session, const Json::Value &extraArgs,
+		JourneyStep &stepToMarkAsErrored)
 	{
 		TRACE_POINT();
-		HandshakePrepare(session, extraArgs).execute();
-
 		Pipe stdinChannel = createPipe(__FILE__, __LINE__);
 		Pipe stdoutAndErrChannel = createPipe(__FILE__, __LINE__);
 		adhoc_lve::LveEnter scopedLveEnter(LveLoggingDecorator::lveInitOnce(),
@@ -146,6 +145,7 @@ private:
 		session.journey.setStepPerformed(SPAWNING_KIT_PREPARATION);
 		session.journey.setStepInProgress(SPAWNING_KIT_FORK_SUBPROCESS);
 		session.journey.setStepInProgress(SUBPROCESS_BEFORE_FIRST_EXEC);
+		stepToMarkAsErrored = SPAWNING_KIT_FORK_SUBPROCESS;
 
 		pid_t pid = syscalls::fork();
 		if (pid == 0) {
@@ -186,6 +186,7 @@ private:
 			UPDATE_TRACE_POINT();
 			session.journey.setStepPerformed(SPAWNING_KIT_FORK_SUBPROCESS);
 			session.journey.setStepInProgress(SPAWNING_KIT_HANDSHAKE_PERFORM);
+			stepToMarkAsErrored = SPAWNING_KIT_HANDSHAKE_PERFORM;
 
 			scopedLveEnter.exit();
 
@@ -238,13 +239,16 @@ public:
 
 		HandshakeSession session(*context, config, SPAWN_DIRECTLY);
 		session.journey.setStepInProgress(SPAWNING_KIT_PREPARATION);
+		HandshakePrepare(session, extraArgs).execute();
+		JourneyStep stepToMarkAsErrored = SPAWNING_KIT_PREPARATION;
 
 		try {
-			return internalSpawn(options, config, session, extraArgs);
+			return internalSpawn(options, config, session, extraArgs,
+				stepToMarkAsErrored);
 		} catch (const SpawnException &) {
 			throw;
 		} catch (const std::exception &originalException) {
-			session.journey.setStepErrored(SPAWNING_KIT_PREPARATION);
+			session.journey.setStepErrored(stepToMarkAsErrored, true);
 			throw SpawnException(originalException, session.journey,
 				&config).finalize();
 		}
